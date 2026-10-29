@@ -39,15 +39,6 @@ jobs:
           accept-android-sdk-licenses: true
           packages: platform-tools platforms;android-36 build-tools;36.0.0
 
-      - name: Inject approved Firebase client config when provided
-        shell: bash
-        env:
-          FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
-        run: |
-          if [[ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]]; then
-            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > app/google-services.json
-          fi
-
       - name: Require release signing secrets
         shell: bash
         env:

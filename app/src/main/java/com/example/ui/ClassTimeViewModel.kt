@@ -10,7 +10,7 @@ import com.example.data.model.ClassEntity
 import com.example.data.model.ReminderPreferenceEntity
 import com.example.data.model.VisitorEntity
 import com.example.data.repository.ClassRepository
-import com.example.data.sync.FirestoreSyncManager
+import com.example.data.sync.PublicDataSyncScheduler
 import com.example.util.NotificationHelper
 import com.example.util.SoundPreviewPlayer
 import com.example.util.TimezoneHelper
@@ -33,6 +33,7 @@ enum class TimetableTab {
 class ClassTimeViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getDatabase(application)
     private val repository = ClassRepository(
+        database = database,
         classDao = database.classDao(),
         reminderDao = database.reminderDao(),
         announcementDao = database.announcementDao(),
@@ -285,19 +286,12 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    /**
-     * Pulls the latest schedule + notices from the PUBLIC FIREBASE DATABASE
-     * (managed from the web admin dashboard) and stores them in the local
-     * Room database so the app works offline. Replaces the old hardcoded seed.
-     */
-    fun seedUniversitySchedule() {
-        viewModelScope.launch {
-            FirestoreSyncManager.sync(getApplication(), force = true)
-        }
+    /** Enqueues a network-constrained refresh without blocking local Room reads. */
+    fun refreshPublishedData() {
+        PublicDataSyncScheduler.schedule(getApplication())
     }
 
-    /** Live status of the public-database sync (Syncing / Success / Error). */
-    val cloudSyncState: StateFlow<FirestoreSyncManager.SyncUiState> = FirestoreSyncManager.state
+    val lastSuccessfulSync = repository.lastSuccessfulSync
 
     fun clearAllClasses() {
         viewModelScope.launch {

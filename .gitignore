@@ -11,10 +11,6 @@ local.properties
 captures/
 
 # Local configuration and secrets
-.env
-.env.*
-!.env.example
-app/google-services.json
 *.jks
 *.keystore
 *.p12

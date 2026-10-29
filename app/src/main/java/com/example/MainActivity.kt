@@ -45,7 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.ClassEntity
-import com.example.data.sync.FirestoreSyncManager
+import com.example.data.sync.PublicDataSyncScheduler
 import com.example.ui.ClassTimeViewModel
 import com.example.ui.components.ClassDetailSheet
 import com.example.ui.components.TimezoneSelectorDialog
@@ -70,18 +70,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Pull the latest schedule + notices from the PUBLIC FIREBASE DATABASE
-        // into the local Room cache (skips automatically if synced recently).
-        lifecycleScope.launch(Dispatchers.IO) {
-            FirestoreSyncManager.sync(applicationContext, force = false)
-            ReleaseUpdateChecker.notifyIfNewRelease(applicationContext)
-        }
+        // Room content renders first; WorkManager refreshes published API data when connected.
+        PublicDataSyncScheduler.schedule(applicationContext)
+        lifecycleScope.launch(Dispatchers.IO) { ReleaseUpdateChecker.notifyIfNewRelease(applicationContext) }
     }
 
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch(Dispatchers.IO) {
             ReleaseUpdateChecker.notifyIfNewRelease(applicationContext)
+            PublicDataSyncScheduler.schedule(applicationContext)
         }
     }
 }

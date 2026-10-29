@@ -20,4 +20,7 @@ interface ReminderDao {
 
     @Query("DELETE FROM reminder_preferences WHERE classId = :classId")
     suspend fun deletePreferenceForClass(classId: String)
+
+    @Query("DELETE FROM reminder_preferences WHERE classId NOT IN (SELECT id FROM classes)")
+    suspend fun deletePreferencesForMissingClasses()
 }

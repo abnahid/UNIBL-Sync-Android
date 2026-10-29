@@ -4,11 +4,14 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.AnnouncementEntity
 import com.example.data.model.AuditLogEntity
 import com.example.data.model.ClassEntity
 import com.example.data.model.ReminderPreferenceEntity
 import com.example.data.model.VisitorEntity
+import com.example.data.model.SyncStateEntity
 
 @Database(
     entities = [
@@ -16,9 +19,10 @@ import com.example.data.model.VisitorEntity
         ReminderPreferenceEntity::class,
         AnnouncementEntity::class,
         AuditLogEntity::class,
-        VisitorEntity::class
+        VisitorEntity::class,
+        SyncStateEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -27,6 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun announcementDao(): AnnouncementDao
     abstract fun auditLogDao(): AuditLogDao
     abstract fun visitorDao(): VisitorDao
+    abstract fun syncStateDao(): SyncStateDao
 
     companion object {
         @Volatile
@@ -39,10 +44,18 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "classtime_database"
                 )
-                    .fallbackToDestructiveMigration(true)
+                    .addMigrations(MIGRATION_3_4)
                     .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_state` (`resource` TEXT NOT NULL, `lastSuccessfulSyncEpochMs` INTEGER NOT NULL, PRIMARY KEY(`resource`))"
+                )
             }
         }
     }

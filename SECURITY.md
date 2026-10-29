@@ -13,6 +13,4 @@ in a report.
 ## Scope
 
 The Android client is a public client and must not contain server credentials or
-admin authentication secrets. Firebase client configuration is not a server
-credential, but access control must be enforced by Firebase rules and the
-private backend.
+admin authentication secrets. Access control is enforced by the private backend.

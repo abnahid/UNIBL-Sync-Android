@@ -8,7 +8,7 @@ class reminders, timezone support, and links to online class meetings.
 
 - Daily, weekly, and agenda timetable views
 - Group and attendance-mode filtering
-- Firestore synchronization with a local Room offline cache
+- Public API synchronization with a local Room offline cache
 - Announcements with read/unread tracking
 - Per-class and global reminder settings
 - Alarm, sound preview, vibration, and notification support
@@ -29,7 +29,6 @@ Screenshots will be added here when approved release screenshots are available.
 - Jetpack Compose and Material 3
 - Android Gradle Plugin with Gradle Kotlin DSL
 - Room
-- Firebase Firestore client library
 - Kotlin Coroutines, Moshi, Retrofit, and OkHttp
 
 ## Requirements
@@ -46,10 +45,9 @@ Edit the root `app-config.properties` file to set the public API and website
 routes. It contains public URLs only; never put credentials, tokens, passwords,
 database URLs, or signing material in it.
 
-Firebase client configuration is not committed. For local Firestore builds,
-provide an approved `app/google-services.json` locally. CI can receive it from
-the `FIREBASE_GOOGLE_SERVICES_JSON` GitHub Actions secret. Firebase client
-configuration does not replace Firestore security rules.
+The app uses the configured public API for published schedule and announcement
+data. No Firebase project, Firebase configuration file, or Firebase credential
+is required to build or run it.
 
 ## Build on Windows
 
@@ -90,8 +88,7 @@ optional network check and does not block offline use.
 Run `:app:testDebugUnitTest` before submitting changes. If Gradle cannot find
 Java, install JDK 17 and set `JAVA_HOME`. If Android SDK 36 is missing, install
 it through Android Studio's SDK Manager. Never work around build failures by
-committing local SDK files, `.env` files, Firebase service accounts, or signing
-keys.
+committing local SDK files, credentials, or signing keys.
 
 ## Contributing
 

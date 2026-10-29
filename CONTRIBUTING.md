@@ -2,7 +2,7 @@
 
 1. Create a focused branch from `main`.
 2. Keep Android and private website/backend code separate.
-3. Do not commit `.env` files, Firebase service accounts, API credentials,
+3. Do not commit API credentials,
    keystores, passwords, tokens, or APK binaries.
 4. Run `./gradlew :app:testDebugUnitTest :app:assembleDebug` (or the Windows
    wrapper equivalent) before opening a pull request.
