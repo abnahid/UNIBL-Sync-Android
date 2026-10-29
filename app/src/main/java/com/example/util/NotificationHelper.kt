@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -92,5 +93,35 @@ object NotificationHelper {
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(notificationId, builder.build())
+    }
+
+    fun sendAppUpdateNotification(context: Context, version: String, downloadUrl: String) {
+        if (!hasNotificationPermission(context)) return
+
+        createNotificationChannels(context)
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            version.hashCode(),
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val message = "Updated to your APK: version $version. Tap to download."
+        val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("UNIBL Sync updated")
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(version.hashCode(), notification)
     }
 }

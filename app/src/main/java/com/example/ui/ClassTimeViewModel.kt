@@ -24,11 +24,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-enum class UserRole {
-    STUDENT,
-    ADMIN
-}
-
 enum class TimetableTab {
     DAILY,
     WEEKLY,
@@ -59,13 +54,6 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     )
     val selectedTimezone: StateFlow<String> = _selectedTimezone.asStateFlow()
-
-    // Role & Admin Authentication
-    private val _currentRole = MutableStateFlow(UserRole.STUDENT)
-    val currentRole: StateFlow<UserRole> = _currentRole.asStateFlow()
-
-    private val _isAdminAuthenticated = MutableStateFlow(false)
-    val isAdminAuthenticated: StateFlow<Boolean> = _isAdminAuthenticated.asStateFlow()
 
     // Filters
     private val _selectedGroupFilter = MutableStateFlow("All")
@@ -165,26 +153,6 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setTimezone(tzId: String) {
         _selectedTimezone.value = tzId
-    }
-
-    fun switchRole(role: UserRole) {
-        _currentRole.value = role
-    }
-
-    fun loginAdmin(passcode: String): Boolean {
-        // Admin password check: 'admin123'
-        return if (passcode == "admin123" || passcode == "admin") {
-            _isAdminAuthenticated.value = true
-            _currentRole.value = UserRole.ADMIN
-            true
-        } else {
-            false
-        }
-    }
-
-    fun logoutAdmin() {
-        _isAdminAuthenticated.value = false
-        _currentRole.value = UserRole.STUDENT
     }
 
     fun setGroupFilter(group: String) {

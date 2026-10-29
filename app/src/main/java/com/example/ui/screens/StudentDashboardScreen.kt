@@ -462,7 +462,7 @@ fun StudentDashboardScreen(
                         )
                         Text(
                             text = if (classes.isEmpty()) {
-                                "The university timetable is currently blank. Administrators can publish classes or load the official schedule in Admin Portal."
+                                "The university timetable is currently blank. Official classes and announcements are published from the website."
                             } else {
                                 "You're all caught up for upcoming sessions! Check the timetable tab for complete schedule history."
                             },

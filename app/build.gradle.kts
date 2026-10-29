@@ -1,4 +1,14 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
+
+val appConfig = Properties().apply {
+  rootProject.file("app-config.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
+}
+
+fun Properties.publicConfig(name: String): String =
+  getProperty(name, "").trim()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 
 plugins {
   alias(libs.plugins.android.application)
@@ -16,20 +26,17 @@ android {
     applicationId = "com.aistudio.classtime.vsqkpd"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = providers.gradleProperty("VERSION_CODE").orNull?.toIntOrNull() ?: 1
+    versionName = providers.gradleProperty("VERSION_NAME").orNull ?: "1.0"
 
-    // Empty by default keeps the existing Firestore sync path working.
-    // Release builds can set CENTRAL_API_BASE_URL=https://your-next-app.example/
-    // to enable the controlled REST migration in a future app version.
-    val centralApiBaseUrl = providers.environmentVariable("CENTRAL_API_BASE_URL").orNull ?: ""
-    buildConfigField("String", "CENTRAL_API_BASE_URL", "\"$centralApiBaseUrl\"")
+    buildConfigField("String", "PUBLIC_API_BASE_URL", "\"${appConfig.publicConfig("PUBLIC_API_BASE_URL")}\"")
+    buildConfigField("String", "PUBLIC_ROUTE_URL", "\"${appConfig.publicConfig("PUBLIC_ROUTE_URL")}\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Do not remove or modify these signingConfigs. They are necessary for building, installing,
-  // and updating Android apps in AI Studio.
+  // Release signing is supplied only by CI/local environment variables. Debug builds use
+  // Android's generated default debug keystore and do not require a committed key file.
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
@@ -37,12 +44,6 @@ android {
       storePassword = System.getenv("STORE_PASSWORD")
       keyAlias = "upload"
       keyPassword = System.getenv("KEY_PASSWORD")
-    }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
     }
   }
 
@@ -56,9 +57,7 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
-      // AI Studio.
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // AGP supplies and manages the default debug signing configuration.
     }
   }
   compileOptions {
@@ -114,12 +113,8 @@ dependencies {
   // implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
-  // Active Firestore and Auth dependencies:
+  // Active Firestore dependency:
   implementation(libs.firebase.firestore)
-  implementation(libs.firebase.auth)
-  implementation(libs.androidx.credentials)
-  implementation(libs.androidx.credentials.play.services)
-  implementation(libs.googleid)
   implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)

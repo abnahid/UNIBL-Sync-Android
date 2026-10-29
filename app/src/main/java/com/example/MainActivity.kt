@@ -2,7 +2,6 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
@@ -13,19 +12,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -52,17 +47,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.ClassEntity
 import com.example.data.sync.FirestoreSyncManager
 import com.example.ui.ClassTimeViewModel
-import com.example.ui.UserRole
-import com.example.ui.components.AdminLoginDialog
 import com.example.ui.components.ClassDetailSheet
 import com.example.ui.components.TimezoneSelectorDialog
-import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AnnouncementsScreen
 import com.example.ui.screens.ReminderSettingsScreen
 import com.example.ui.screens.StudentDashboardScreen
 import com.example.ui.screens.TimetableScreen
 import com.example.ui.theme.ClassTimeTheme
 import com.example.util.TimezoneHelper
+import com.example.util.ReleaseUpdateChecker
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -81,6 +74,14 @@ class MainActivity : ComponentActivity() {
         // into the local Room cache (skips automatically if synced recently).
         lifecycleScope.launch(Dispatchers.IO) {
             FirestoreSyncManager.sync(applicationContext, force = false)
+            ReleaseUpdateChecker.notifyIfNewRelease(applicationContext)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch(Dispatchers.IO) {
+            ReleaseUpdateChecker.notifyIfNewRelease(applicationContext)
         }
     }
 }
@@ -91,8 +92,6 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val coroutineScope = rememberCoroutineScope()
 
     // State from ViewModel
-    val currentRole by viewModel.currentRole.collectAsStateWithLifecycle()
-    val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsStateWithLifecycle()
     val selectedTimezone by viewModel.selectedTimezone.collectAsStateWithLifecycle()
     val currentTimeMs by viewModel.currentTimeEpochMs.collectAsStateWithLifecycle()
 
@@ -101,8 +100,6 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val nextClass by viewModel.nextUpcomingClass.collectAsStateWithLifecycle()
     val ongoingClass by viewModel.ongoingClass.collectAsStateWithLifecycle()
     val announcements by viewModel.allAnnouncements.collectAsStateWithLifecycle()
-    val auditLogs by viewModel.allAuditLogs.collectAsStateWithLifecycle()
-    val visitors by viewModel.allVisitors.collectAsStateWithLifecycle()
     val preferences by viewModel.allPreferences.collectAsStateWithLifecycle()
 
     val selectedTab by viewModel.selectedTimetableTab.collectAsStateWithLifecycle()
@@ -119,43 +116,11 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     // Navigation and Dialog state
     var studentNavIndex by remember { mutableIntStateOf(0) } // 0: Home, 1: Timetable, 2: Reminders, 3: Notices
     var showTimezoneDialog by remember { mutableStateOf(false) }
-    var showAdminLoginDialog by remember { mutableStateOf(false) }
     var selectedClassForDetail by remember { mutableStateOf<ClassEntity?>(null) }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Handle back button when in admin or sheet
-    BackHandler(enabled = currentRole == UserRole.ADMIN) {
-        viewModel.switchRole(UserRole.STUDENT)
-    }
-
-    if (currentRole == UserRole.ADMIN) {
-        AdminDashboardScreen(
-            classes = rawClasses,
-            auditLogs = auditLogs,
-            visitors = visitors,
-            onCreateClass = { subject, type, instructor, date, start, end, tz, group, mode, platform, channel, loc, notes ->
-                viewModel.createClass(subject, type, instructor, date, start, end, tz, group, mode, platform, channel, loc, notes)
-            },
-            onUpdateClass = { viewModel.updateClass(it) },
-            onRescheduleClass = { classEntity, newDate, newStart, newEnd, reason ->
-                viewModel.rescheduleClass(classEntity, newDate, newStart, newEnd, reason)
-            },
-            onCancelClass = { classEntity, reason ->
-                viewModel.cancelClass(classEntity, reason)
-            },
-            onDeleteClass = { viewModel.deleteClass(it) },
-            onSeedUniversitySchedule = { viewModel.seedUniversitySchedule() },
-            onClearAll = { viewModel.clearAllClasses() },
-            onPostAnnouncement = { title, msg, priority, grp ->
-                viewModel.postAnnouncement(title, msg, priority, grp)
-            },
-            onRegisterVisitor = { name, email, purpose, grp ->
-                viewModel.registerVisitor(name, email, purpose, grp)
-            },
-            onExitAdmin = { viewModel.switchRole(UserRole.STUDENT) }
-        )
-    } else {
+    run {
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -190,23 +155,6 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                             )
                         }
 
-                        // Admin Portal Access Button
-                        IconButton(
-                            onClick = {
-                                if (isAdminAuthenticated) {
-                                    viewModel.switchRole(UserRole.ADMIN)
-                                } else {
-                                    showAdminLoginDialog = true
-                                }
-                            },
-                            modifier = Modifier.testTag("admin_portal_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isAdminAuthenticated) Icons.Default.AdminPanelSettings else Icons.Default.Lock,
-                                contentDescription = "Admin Portal",
-                                tint = if (isAdminAuthenticated) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                 )
@@ -319,16 +267,6 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
             selectedTimezone = selectedTimezone,
             onTimezoneSelected = { viewModel.setTimezone(it) },
             onDismiss = { showTimezoneDialog = false }
-        )
-    }
-
-    // Admin Login Dialog
-    if (showAdminLoginDialog) {
-        AdminLoginDialog(
-            onLogin = { passcode ->
-                viewModel.loginAdmin(passcode)
-            },
-            onDismiss = { showAdminLoginDialog = false }
         )
     }
 

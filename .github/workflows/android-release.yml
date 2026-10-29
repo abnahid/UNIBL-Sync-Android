@@ -1,0 +1,88 @@
+name: Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Release version, for example 1.0.0
+        required: true
+        type: string
+      version_code:
+        description: Monotonically increasing Android version code
+        required: true
+        type: string
+      release_notes:
+        description: Release notes
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Inject approved Firebase client config when provided
+        shell: bash
+        env:
+          FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
+        run: |
+          if [[ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]]; then
+            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > app/google-services.json
+          fi
+
+      - name: Require release signing secrets
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo 'ANDROID_KEYSTORE_BASE64 is not configured.' >&2; exit 1; }
+          test -n "$STORE_PASSWORD" || { echo 'ANDROID_STORE_PASSWORD is not configured.' >&2; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo 'ANDROID_KEY_PASSWORD is not configured.' >&2; exit 1; }
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/unibl-upload-key.jks"
+
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.3.1
+
+      - name: Build signed release APK
+        shell: bash
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/unibl-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          test -f ./gradlew || { echo 'The Gradle wrapper is missing. Restore it before publishing a release.' >&2; exit 1; }
+          bash ./gradlew :app:assembleRelease -PVERSION_NAME="$VERSION_NAME" -PVERSION_CODE="$VERSION_CODE" --stacktrace
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version_name }}
+          name: UNIBL Sync v${{ inputs.version_name }}
+          body: |
+            ${{ inputs.release_notes }}
+
+            Version code: ${{ inputs.version_code }}
+            Application ID: com.aistudio.classtime.vsqkpd
+          files: app/build/outputs/apk/release/app-release.apk
