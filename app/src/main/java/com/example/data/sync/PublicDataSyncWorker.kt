@@ -11,13 +11,17 @@ import java.io.IOException
 class PublicDataSyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result = try {
         val database = AppDatabase.getDatabase(applicationContext)
+        val apiClient = com.example.data.remote.PublicApiClient(
+            client = com.example.data.remote.NetworkClientProvider.getClient(applicationContext)
+        )
         ClassRepository(
             database = database,
             classDao = database.classDao(),
             reminderDao = database.reminderDao(),
             announcementDao = database.announcementDao(),
             auditLogDao = database.auditLogDao(),
-            visitorDao = database.visitorDao()
+            visitorDao = database.visitorDao(),
+            apiClient = apiClient
         ).refreshPublicData()
         Result.success()
     } catch (error: ApiException) {

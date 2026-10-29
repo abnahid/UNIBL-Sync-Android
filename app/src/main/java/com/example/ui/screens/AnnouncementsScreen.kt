@@ -22,11 +22,14 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,7 +52,8 @@ import java.util.Locale
 fun AnnouncementsScreen(
     announcements: List<AnnouncementEntity>,
     onMarkAllRead: () -> Unit,
-    onMarkRead: (String) -> Unit
+    onMarkRead: (String) -> Unit,
+    onRefresh: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -64,7 +68,7 @@ fun AnnouncementsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Announcements & Updates",
                     style = MaterialTheme.typography.titleMedium,
@@ -77,14 +81,22 @@ fun AnnouncementsScreen(
                 )
             }
 
-            if (announcements.any { !it.isRead }) {
-                TextButton(
-                    onClick = onMarkAllRead,
-                    modifier = Modifier.testTag("mark_all_read_button")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.testTag("announcements_refresh_button")
                 ) {
-                    Icon(imageVector = Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Mark all read", style = MaterialTheme.typography.labelSmall)
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(20.dp))
+                }
+                if (announcements.any { !it.isRead }) {
+                    TextButton(
+                        onClick = onMarkAllRead,
+                        modifier = Modifier.testTag("mark_all_read_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Mark all read", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }
@@ -112,6 +124,12 @@ fun AnnouncementsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(onClick = onRefresh) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Refresh Notices")
+                    }
                 }
             }
         } else {

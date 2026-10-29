@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -70,7 +71,8 @@ fun TimetableScreen(
     onDateSelected: (String) -> Unit,
     onGroupFilterSelected: (String) -> Unit,
     onModeFilterSelected: (String) -> Unit,
-    onClassClick: (ClassEntity) -> Unit
+    onClassClick: (ClassEntity) -> Unit,
+    onRefresh: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -135,19 +137,32 @@ fun TimetableScreen(
                     Text("Filters & Group", style = MaterialTheme.typography.labelMedium)
                 }
 
-                Button(
-                    onClick = {
-                        IcsExporter.shareIcsFile(context, classes)
-                    },
-                    modifier = Modifier.testTag("export_all_ics_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CalendarMonth,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Export .ICS", style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onRefresh,
+                        modifier = Modifier.testTag("timetable_refresh_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            IcsExporter.shareIcsFile(context, classes)
+                        },
+                        modifier = Modifier.testTag("export_all_ics_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Export .ICS", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
 
@@ -249,6 +264,14 @@ fun TimetableScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = onRefresh
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Refresh Timetable")
+                    }
                 }
             }
         } else {

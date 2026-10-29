@@ -9,6 +9,12 @@ import com.example.data.model.AuditLogEntity
 import com.example.data.model.ClassEntity
 import com.example.data.model.ReminderPreferenceEntity
 import com.example.data.model.VisitorEntity
+import com.example.data.remote.AdminApiClient
+import com.example.data.remote.AuthApiClient
+import com.example.data.remote.NetworkClientProvider
+import com.example.data.remote.PublicApiClient
+import com.example.data.remote.SessionManager
+import com.example.data.remote.UserSession
 import com.example.data.repository.ClassRepository
 import com.example.data.sync.PublicDataSyncScheduler
 import com.example.util.NotificationHelper
@@ -23,6 +29,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+enum class UserRole {
+    STUDENT,
+    ADMIN
+}
 
 enum class TimetableTab {
     DAILY,
@@ -30,15 +44,44 @@ enum class TimetableTab {
     AGENDA
 }
 
+data class SyncUiState(
+    val isSyncing: Boolean = false,
+    val errorMessage: String? = null,
+    val lastSyncedEpochMs: Long? = null
+)
+
+data class AuthUiState(
+    val isAuthenticated: Boolean = false,
+    val user: UserSession? = null,
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null
+)
+
 class ClassTimeViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getDatabase(application)
+    private val sessionManager = SessionManager.getInstance(application)
+    private val publicApiClient = PublicApiClient(
+        client = NetworkClientProvider.getClient(application)
+    )
+    private val adminApiClient = AdminApiClient(
+        context = application,
+        client = NetworkClientProvider.getClient(application)
+    )
+    private val authApiClient = AuthApiClient(
+        context = application,
+        client = NetworkClientProvider.getClient(application)
+    )
+
     private val repository = ClassRepository(
         database = database,
         classDao = database.classDao(),
         reminderDao = database.reminderDao(),
         announcementDao = database.announcementDao(),
         auditLogDao = database.auditLogDao(),
-        visitorDao = database.visitorDao()
+        visitorDao = database.visitorDao(),
+        apiClient = publicApiClient,
+        adminApiClient = adminApiClient,
+        sessionManager = sessionManager
     )
 
     // Current Time Ticker (updates every second)
@@ -48,13 +91,29 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     // Student Selected Timezone
     private val _selectedTimezone = MutableStateFlow(
         try {
-            // Default to Bangladesh Asia/Dhaka or auto-detected local
             TimezoneHelper.BANGLADESH_TIMEZONE
         } catch (_: Exception) {
             TimezoneHelper.BOSNIA_TIMEZONE
         }
     )
     val selectedTimezone: StateFlow<String> = _selectedTimezone.asStateFlow()
+
+    // Navigation Role
+    private val _currentRole = MutableStateFlow(UserRole.STUDENT)
+    val currentRole: StateFlow<UserRole> = _currentRole.asStateFlow()
+
+    // Sync State
+    private val _syncState = MutableStateFlow(SyncUiState())
+    val syncState: StateFlow<SyncUiState> = _syncState.asStateFlow()
+
+    // Auth State
+    private val _authState = MutableStateFlow(
+        AuthUiState(
+            isAuthenticated = sessionManager.isLoggedIn(),
+            user = sessionManager.loadSession()
+        )
+    )
+    val authState: StateFlow<AuthUiState> = _authState.asStateFlow()
 
     // Filters
     private val _selectedGroupFilter = MutableStateFlow("All")
@@ -70,7 +129,7 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _selectedTimetableTab = MutableStateFlow(TimetableTab.DAILY)
     val selectedTimetableTab: StateFlow<TimetableTab> = _selectedTimetableTab.asStateFlow()
 
-    private val _selectedDate = MutableStateFlow("2026-10-26")
+    private val _selectedDate = MutableStateFlow(getTodayDateIso())
     val selectedDate: StateFlow<String> = _selectedDate.asStateFlow()
 
     // Global Reminder Settings
@@ -104,6 +163,8 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
 
     val allVisitors: StateFlow<List<VisitorEntity>> = repository.allVisitors
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val lastSuccessfulSync = repository.lastSuccessfulSync
 
     // Filtered Classes
     val filteredClasses: StateFlow<List<ClassEntity>> = combine(
@@ -140,7 +201,7 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     init {
-        // Start 1-second ticker for live clock and countdown
+        // Start 1-second ticker for live student clock
         viewModelScope.launch {
             while (isActive) {
                 _currentTimeEpochMs.value = System.currentTimeMillis()
@@ -150,6 +211,125 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
 
         // Initialize notification channels
         NotificationHelper.createNotificationChannels(application)
+
+        // Observe Room sync timestamp
+        viewModelScope.launch {
+            repository.lastSuccessfulSync.collect { syncEntity ->
+                if (syncEntity != null) {
+                    _syncState.value = _syncState.value.copy(
+                        lastSyncedEpochMs = syncEntity.lastSuccessfulSyncEpochMs
+                    )
+                }
+            }
+        }
+
+        // Dynamically adjust selected date when classes are loaded
+        viewModelScope.launch {
+            allClasses.collect { classes ->
+                if (classes.isNotEmpty()) {
+                    val availableDates = classes.map { it.sourceDate }.distinct().sorted()
+                    val today = getTodayDateIso()
+                    if (!_selectedDate.value.contains(today) && availableDates.contains(today)) {
+                        _selectedDate.value = today
+                    } else if (!availableDates.contains(_selectedDate.value)) {
+                        _selectedDate.value = availableDates.first()
+                    }
+                }
+            }
+        }
+
+        // Perform immediate foreground API sync on launch
+        refreshData(force = false)
+
+        // Check backend session status
+        checkSession()
+    }
+
+    /**
+     * Performs a foreground network sync against the official public endpoints.
+     * Transactionally updates Room without wiping cache on network failure.
+     */
+    fun refreshData(force: Boolean = true) {
+        viewModelScope.launch {
+            _syncState.value = _syncState.value.copy(isSyncing = true, errorMessage = null)
+            try {
+                repository.refreshPublicData()
+                if (sessionManager.isLoggedIn()) {
+                    try {
+                        repository.refreshAdminData()
+                    } catch (_: Exception) { }
+                }
+                _syncState.value = _syncState.value.copy(
+                    isSyncing = false,
+                    errorMessage = null,
+                    lastSyncedEpochMs = System.currentTimeMillis()
+                )
+            } catch (e: Exception) {
+                val errorMsg = e.localizedMessage ?: "Failed to synchronize timetable"
+                _syncState.value = _syncState.value.copy(
+                    isSyncing = false,
+                    errorMessage = errorMsg
+                )
+            }
+        }
+    }
+
+    /**
+     * Authenticates an administrator or faculty member using Better Auth / API v1.
+     */
+    fun loginStaff(
+        email: String,
+        passcode: String,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _authState.value = _authState.value.copy(isLoading = true, errorMessage = null)
+            val result = authApiClient.login(email, passcode)
+            result.onSuccess { user ->
+                _authState.value = AuthUiState(
+                    isAuthenticated = true,
+                    user = user,
+                    isLoading = false,
+                    errorMessage = null
+                )
+                _currentRole.value = UserRole.ADMIN
+                refreshData(force = true)
+                onSuccess()
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Invalid email or password"
+                _authState.value = _authState.value.copy(isLoading = false, errorMessage = msg)
+                onError(msg)
+            }
+        }
+    }
+
+    fun logoutStaff() {
+        viewModelScope.launch {
+            authApiClient.logout()
+            _authState.value = AuthUiState(isAuthenticated = false, user = null)
+            _currentRole.value = UserRole.STUDENT
+        }
+    }
+
+    fun switchRole(role: UserRole) {
+        _currentRole.value = role
+    }
+
+    private fun checkSession() {
+        viewModelScope.launch {
+            val result = authApiClient.checkSession()
+            result.onSuccess { user ->
+                if (user != null) {
+                    _authState.value = AuthUiState(isAuthenticated = true, user = user)
+                } else {
+                    _authState.value = AuthUiState(isAuthenticated = false, user = null)
+                    if (_currentRole.value == UserRole.ADMIN) {
+                        _currentRole.value = UserRole.STUDENT
+                    }
+                }
+            }
+        }
     }
 
     fun setTimezone(tzId: String) {
@@ -215,7 +395,7 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // Repository mutation delegates
+    // Admin & Staff Mutations
     fun createClass(
         subject: String,
         classType: String,
@@ -229,30 +409,43 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         platform: String = ClassEntity.PLATFORM_TEAMS,
         teamsChannel: String = "General",
         locationOrUrl: String = "",
-        notes: String = ""
+        notes: String = "",
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
     ) {
         viewModelScope.launch {
-            repository.createClass(
-                subject = subject,
-                classType = classType,
-                instructor = instructor,
-                sourceDate = sourceDate,
-                sourceStartTime = sourceStartTime,
-                sourceEndTime = sourceEndTime,
-                sourceTimezone = sourceTimezone,
-                groupName = groupName,
-                attendanceMode = attendanceMode,
-                platform = platform,
-                teamsChannel = teamsChannel,
-                locationOrUrl = locationOrUrl,
-                notes = notes
-            )
+            try {
+                repository.createClass(
+                    subject = subject,
+                    classType = classType,
+                    instructor = instructor,
+                    sourceDate = sourceDate,
+                    sourceStartTime = sourceStartTime,
+                    sourceEndTime = sourceEndTime,
+                    sourceTimezone = sourceTimezone,
+                    groupName = groupName,
+                    attendanceMode = attendanceMode,
+                    platform = platform,
+                    teamsChannel = teamsChannel,
+                    locationOrUrl = locationOrUrl,
+                    notes = notes
+                )
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
         }
     }
 
-    fun updateClass(classEntity: ClassEntity) {
+    fun updateClass(classEntity: ClassEntity, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
         viewModelScope.launch {
-            repository.updateClass(classEntity)
+            try {
+                repository.updateClass(classEntity)
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
         }
     }
 
@@ -261,37 +454,94 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         newDate: String,
         newStartTime: String,
         newEndTime: String,
-        reason: String
+        reason: String,
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
     ) {
         viewModelScope.launch {
-            repository.rescheduleClass(
-                classEntity = classEntity,
-                newDate = newDate,
-                newStartTime = newStartTime,
-                newEndTime = newEndTime,
-                reason = reason
-            )
+            try {
+                repository.rescheduleClass(
+                    classEntity = classEntity,
+                    newDate = newDate,
+                    newStartTime = newStartTime,
+                    newEndTime = newEndTime,
+                    reason = reason
+                )
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
         }
     }
 
-    fun cancelClass(classEntity: ClassEntity, reason: String) {
+    fun cancelClass(
+        classEntity: ClassEntity,
+        reason: String,
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
         viewModelScope.launch {
-            repository.cancelClass(classEntity, reason)
+            try {
+                repository.cancelClass(classEntity, reason)
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
         }
     }
 
-    fun deleteClass(classEntity: ClassEntity) {
+    fun deleteClass(classEntity: ClassEntity, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
         viewModelScope.launch {
-            repository.deleteClass(classEntity)
+            try {
+                repository.deleteClass(classEntity)
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
         }
     }
 
-    /** Enqueues a network-constrained refresh without blocking local Room reads. */
-    fun refreshPublishedData() {
-        PublicDataSyncScheduler.schedule(getApplication())
+    fun postAnnouncement(
+        title: String,
+        message: String,
+        priority: String = "NORMAL",
+        targetGroup: String = "All",
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.postAnnouncement(
+                    title = title,
+                    message = message,
+                    priority = priority,
+                    targetGroup = targetGroup
+                )
+                refreshData(force = true)
+                onComplete(true, null)
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage)
+            }
+        }
     }
 
-    val lastSuccessfulSync = repository.lastSuccessfulSync
+    fun markAnnouncementRead(id: String) {
+        viewModelScope.launch {
+            repository.markAnnouncementAsRead(id)
+        }
+    }
+
+    fun markAllAnnouncementsRead() {
+        viewModelScope.launch {
+            repository.markAllAnnouncementsRead()
+        }
+    }
+
+    fun registerVisitor(name: String, email: String, purpose: String, group: String = "All") {
+        viewModelScope.launch {
+            repository.registerVisitor(name, email, purpose, group)
+        }
+    }
 
     fun clearAllClasses() {
         viewModelScope.launch {
@@ -317,42 +567,17 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun postAnnouncement(
-        title: String,
-        message: String,
-        priority: String = "NORMAL",
-        targetGroup: String = "All"
-    ) {
-        viewModelScope.launch {
-            repository.postAnnouncement(
-                title = title,
-                message = message,
-                priority = priority,
-                targetGroup = targetGroup
-            )
-        }
-    }
-
-    fun markAnnouncementRead(id: String) {
-        viewModelScope.launch {
-            repository.markAnnouncementAsRead(id)
-        }
-    }
-
-    fun markAllAnnouncementsRead() {
-        viewModelScope.launch {
-            repository.markAllAnnouncementsRead()
-        }
-    }
-
-    fun registerVisitor(name: String, email: String, purpose: String, group: String = "All") {
-        viewModelScope.launch {
-            repository.registerVisitor(name, email, purpose, group)
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
         SoundPreviewPlayer.stopTone()
+    }
+
+    private fun getTodayDateIso(): String {
+        return try {
+            val zone = ZoneId.of(TimezoneHelper.BOSNIA_TIMEZONE)
+            LocalDate.now(zone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        } catch (_: Exception) {
+            "2026-10-26"
+        }
     }
 }

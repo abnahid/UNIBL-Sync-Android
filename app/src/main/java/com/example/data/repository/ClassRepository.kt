@@ -12,11 +12,15 @@ import com.example.data.local.VisitorDao
 import com.example.data.model.ReminderPreferenceEntity
 import com.example.data.model.VisitorEntity
 import com.example.data.model.SyncStateEntity
+import com.example.data.remote.AdminApiClient
 import com.example.data.remote.PublicApiClient
 import com.example.data.remote.PublicDataSource
+import com.example.data.remote.SessionManager
+import com.example.data.remote.UserSession
 import com.example.util.TimezoneHelper
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import java.util.UUID
 
 class ClassRepository(
@@ -26,18 +30,22 @@ class ClassRepository(
     private val announcementDao: AnnouncementDao,
     private val auditLogDao: AuditLogDao,
     private val visitorDao: VisitorDao,
-    private val apiClient: PublicDataSource = PublicApiClient()
+    private val apiClient: PublicDataSource = PublicApiClient(),
+    private val adminApiClient: AdminApiClient? = null,
+    private val sessionManager: SessionManager? = null
 ) {
     val allClasses: Flow<List<ClassEntity>> = classDao.getAllClasses()
     val allPreferences: Flow<List<ReminderPreferenceEntity>> = reminderDao.getAllPreferences()
     val allAnnouncements: Flow<List<AnnouncementEntity>> = announcementDao.getAllAnnouncements()
     val allAuditLogs: Flow<List<AuditLogEntity>> = auditLogDao.getAllLogs()
     val allVisitors: Flow<List<VisitorEntity>> = visitorDao.getAllVisitors()
-    val lastSuccessfulSync = database.syncStateDao().observe("public-data")
+    val lastSuccessfulSync: Flow<SyncStateEntity?> = database.syncStateDao().observe("public-data")
+    val currentUserSession: Flow<UserSession?> = sessionManager?.sessionState ?: emptyFlow()
 
     /**
-     * Downloads complete public resources before replacing their cache in one Room transaction.
-     * A network or parsing failure leaves the prior offline cache unchanged.
+     * Downloads complete public resources from the backend API before replacing the cache
+     * in a single transactional Room operation.
+     * Network or parsing failures leave the prior offline cache intact.
      */
     suspend fun refreshPublicData() {
         val classes = apiClient.fetchClasses()
@@ -55,33 +63,6 @@ class ClassRepository(
             announcementDao.insertAnnouncements(announcementsWithReadState)
             database.syncStateDao().save(SyncStateEntity("public-data", syncedAt))
         }
-    }
-
-    suspend fun registerVisitor(
-        name: String,
-        email: String,
-        purpose: String,
-        group: String = "All"
-    ): VisitorEntity {
-        val entity = VisitorEntity(
-            id = UUID.randomUUID().toString(),
-            name = name,
-            email = email,
-            purpose = purpose,
-            targetGroup = group
-        )
-        visitorDao.insertVisitor(entity)
-
-        auditLogDao.insertLog(
-            AuditLogEntity(
-                id = UUID.randomUUID().toString(),
-                action = "VISITOR_REGISTERED",
-                subject = name,
-                details = "Registered visitor for group $group: $purpose ($email)"
-            )
-        )
-
-        return entity
     }
 
     suspend fun createClass(
@@ -102,7 +83,7 @@ class ClassRepository(
         val utcStart = TimezoneHelper.toUtcEpochMs(sourceDate, sourceStartTime, sourceTimezone)
         val utcEnd = TimezoneHelper.toUtcEpochMs(sourceDate, sourceEndTime, sourceTimezone)
 
-        val entity = ClassEntity(
+        val localEntity = ClassEntity(
             id = UUID.randomUUID().toString(),
             subject = subject,
             classType = classType,
@@ -122,7 +103,18 @@ class ClassRepository(
             notes = notes
         )
 
-        classDao.insertClass(entity)
+        val entityToSave = if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            try {
+                adminApiClient.createClass(localEntity)
+            } catch (e: Exception) {
+                // If remote create failed, do not commit invalid state locally
+                throw e
+            }
+        } else {
+            localEntity
+        }
+
+        classDao.insertClass(entityToSave)
 
         auditLogDao.insertLog(
             AuditLogEntity(
@@ -133,17 +125,7 @@ class ClassRepository(
             )
         )
 
-        announcementDao.insertAnnouncement(
-            AnnouncementEntity(
-                id = UUID.randomUUID().toString(),
-                title = "New Class Scheduled: $subject",
-                message = "$classType has been scheduled on $sourceDate at $sourceStartTime ($sourceTimezone) for $groupName.",
-                priority = "INFO",
-                targetGroup = groupName
-            )
-        )
-
-        return entity
+        return entityToSave
     }
 
     suspend fun updateClass(classEntity: ClassEntity) {
@@ -163,6 +145,10 @@ class ClassRepository(
             utcEndEpochMs = utcEnd,
             updatedAtEpochMs = System.currentTimeMillis()
         )
+
+        if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            adminApiClient.updateClass(updated)
+        }
 
         classDao.updateClass(updated)
 
@@ -197,6 +183,10 @@ class ClassRepository(
             updatedAtEpochMs = System.currentTimeMillis()
         )
 
+        if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            adminApiClient.rescheduleClass(classEntity.id, newDate, newStartTime, newEndTime, reason)
+        }
+
         classDao.updateClass(updated)
 
         auditLogDao.insertLog(
@@ -207,16 +197,6 @@ class ClassRepository(
                 details = "Rescheduled from ${classEntity.sourceDate} ${classEntity.sourceStartTime} to $newDate $newStartTime. Reason: $reason"
             )
         )
-
-        announcementDao.insertAnnouncement(
-            AnnouncementEntity(
-                id = UUID.randomUUID().toString(),
-                title = "Schedule Update: ${classEntity.subject} Rescheduled",
-                message = "The ${classEntity.classType} originally at ${classEntity.sourceStartTime} is moved to $newDate at $newStartTime ($reason).",
-                priority = "URGENT",
-                targetGroup = classEntity.groupName
-            )
-        )
     }
 
     suspend fun cancelClass(classEntity: ClassEntity, reason: String) {
@@ -225,6 +205,10 @@ class ClassRepository(
             notes = if (reason.isNotBlank()) "Cancelled: $reason" else classEntity.notes,
             updatedAtEpochMs = System.currentTimeMillis()
         )
+
+        if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            adminApiClient.cancelClass(classEntity.id, reason)
+        }
 
         classDao.updateClass(updated)
         reminderDao.deletePreferenceForClass(classEntity.id)
@@ -237,19 +221,13 @@ class ClassRepository(
                 details = "Class on ${classEntity.sourceDate} cancelled. Reason: $reason"
             )
         )
-
-        announcementDao.insertAnnouncement(
-            AnnouncementEntity(
-                id = UUID.randomUUID().toString(),
-                title = "Class Cancelled: ${classEntity.subject}",
-                message = "The ${classEntity.classType} scheduled on ${classEntity.sourceDate} has been cancelled ($reason). Reminders removed.",
-                priority = "URGENT",
-                targetGroup = classEntity.groupName
-            )
-        )
     }
 
     suspend fun deleteClass(classEntity: ClassEntity) {
+        if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            adminApiClient.deleteClass(classEntity.id)
+        }
+
         classDao.deleteClass(classEntity)
         reminderDao.deletePreferenceForClass(classEntity.id)
 
@@ -292,7 +270,9 @@ class ClassRepository(
         priority: String = "NORMAL",
         targetGroup: String = "All"
     ) {
-        announcementDao.insertAnnouncement(
+        val entityToSave = if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            adminApiClient.postAnnouncement(title, message, priority, targetGroup)
+        } else {
             AnnouncementEntity(
                 id = UUID.randomUUID().toString(),
                 title = title,
@@ -300,7 +280,8 @@ class ClassRepository(
                 priority = priority,
                 targetGroup = targetGroup
             )
-        )
+        }
+        announcementDao.insertAnnouncement(entityToSave)
     }
 
     suspend fun markAnnouncementAsRead(id: String) {
@@ -311,4 +292,43 @@ class ClassRepository(
         announcementDao.markAllAsRead()
     }
 
+    suspend fun registerVisitor(
+        name: String,
+        email: String,
+        purpose: String,
+        group: String = "All"
+    ): VisitorEntity {
+        val entity = VisitorEntity(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            email = email,
+            purpose = purpose,
+            targetGroup = group
+        )
+        visitorDao.insertVisitor(entity)
+        auditLogDao.insertLog(
+            AuditLogEntity(
+                id = UUID.randomUUID().toString(),
+                action = "VISITOR_REGISTERED",
+                subject = name,
+                details = "Registered visitor for group $group: $purpose ($email)"
+            )
+        )
+        return entity
+    }
+
+    suspend fun refreshAdminData() {
+        if (adminApiClient != null && sessionManager?.isLoggedIn() == true) {
+            val logs = adminApiClient.fetchAuditLogs()
+            if (logs.isNotEmpty()) {
+                auditLogDao.clearLogs()
+                for (log in logs) auditLogDao.insertLog(log)
+            }
+            val visitors = adminApiClient.fetchVisitors()
+            if (visitors.isNotEmpty()) {
+                visitorDao.clearVisitors()
+                for (v in visitors) visitorDao.insertVisitor(v)
+            }
+        }
+    }
 }

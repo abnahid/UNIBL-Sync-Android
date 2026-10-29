@@ -52,8 +52,8 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private val MIGRATION_3_4 = object : Migration(3, 4) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
                     "CREATE TABLE IF NOT EXISTS `sync_state` (`resource` TEXT NOT NULL, `lastSuccessfulSyncEpochMs` INTEGER NOT NULL, PRIMARY KEY(`resource`))"
                 )
             }

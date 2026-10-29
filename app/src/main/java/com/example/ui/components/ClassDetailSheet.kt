@@ -23,7 +23,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -391,7 +391,7 @@ fun ClassDetailSheet(
                             onClick = { onPlayTone(tone) },
                             modifier = Modifier.padding(end = 8.dp)
                         ) {
-                            Icon(imageVector = Icons.Default.VolumeUp, contentDescription = "Play", modifier = Modifier.size(16.dp))
+                            Icon(imageVector = Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Play", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Test")
                         }

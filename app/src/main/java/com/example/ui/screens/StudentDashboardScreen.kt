@@ -23,7 +23,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
-import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.automirrored.filled.EventNote
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import com.example.ui.SyncUiState
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Notifications
@@ -39,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,8 +79,10 @@ fun StudentDashboardScreen(
     preferences: List<ReminderPreferenceEntity>,
     selectedTimezone: String,
     currentTimeMs: Long,
+    syncState: SyncUiState = SyncUiState(),
     onClassClick: (ClassEntity) -> Unit,
-    onChangeTimezoneClick: () -> Unit
+    onChangeTimezoneClick: () -> Unit,
+    onRefresh: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -104,6 +110,51 @@ fun StudentDashboardScreen(
     ) {
         item {
             Spacer(modifier = Modifier.height(8.dp))
+
+            if (syncState.isSyncing) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Updating timetable from university server…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            } else if (syncState.errorMessage != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Sync error: ${syncState.errorMessage}",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRefresh) {
+                            Text("Retry", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
 
             // Greeting & Timezone Bar
             Row(
@@ -449,7 +500,7 @@ fun StudentDashboardScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
-                            imageVector = Icons.Default.EventNote,
+                            imageVector = Icons.AutoMirrored.Filled.EventNote,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(44.dp)
@@ -471,6 +522,17 @@ fun StudentDashboardScreen(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                             lineHeight = 18.sp
                         )
+                        if (classes.isEmpty()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = onRefresh,
+                                modifier = Modifier.testTag("dashboard_refresh_button")
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Refresh Timetable")
+                            }
+                        }
                     }
                 }
             }

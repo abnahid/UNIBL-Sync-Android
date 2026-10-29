@@ -12,15 +12,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -43,20 +47,23 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.ClassEntity
 import com.example.data.sync.PublicDataSyncScheduler
 import com.example.ui.ClassTimeViewModel
+import com.example.ui.UserRole
 import com.example.ui.components.ClassDetailSheet
+import com.example.ui.components.StaffLoginDialog
 import com.example.ui.components.TimezoneSelectorDialog
+import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AnnouncementsScreen
 import com.example.ui.screens.ReminderSettingsScreen
 import com.example.ui.screens.StudentDashboardScreen
 import com.example.ui.screens.TimetableScreen
 import com.example.ui.theme.ClassTimeTheme
-import com.example.util.TimezoneHelper
 import com.example.util.ReleaseUpdateChecker
-import androidx.lifecycle.lifecycleScope
+import com.example.util.TimezoneHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -90,6 +97,9 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val coroutineScope = rememberCoroutineScope()
 
     // State from ViewModel
+    val currentRole by viewModel.currentRole.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val authState by viewModel.authState.collectAsStateWithLifecycle()
     val selectedTimezone by viewModel.selectedTimezone.collectAsStateWithLifecycle()
     val currentTimeMs by viewModel.currentTimeEpochMs.collectAsStateWithLifecycle()
 
@@ -98,6 +108,8 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val nextClass by viewModel.nextUpcomingClass.collectAsStateWithLifecycle()
     val ongoingClass by viewModel.ongoingClass.collectAsStateWithLifecycle()
     val announcements by viewModel.allAnnouncements.collectAsStateWithLifecycle()
+    val auditLogs by viewModel.allAuditLogs.collectAsStateWithLifecycle()
+    val visitors by viewModel.allVisitors.collectAsStateWithLifecycle()
     val preferences by viewModel.allPreferences.collectAsStateWithLifecycle()
 
     val selectedTab by viewModel.selectedTimetableTab.collectAsStateWithLifecycle()
@@ -114,11 +126,37 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     // Navigation and Dialog state
     var studentNavIndex by remember { mutableIntStateOf(0) } // 0: Home, 1: Timetable, 2: Reminders, 3: Notices
     var showTimezoneDialog by remember { mutableStateOf(false) }
+    var showStaffLoginDialog by remember { mutableStateOf(false) }
     var selectedClassForDetail by remember { mutableStateOf<ClassEntity?>(null) }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    run {
+    if (currentRole == UserRole.ADMIN && authState.isAuthenticated) {
+        // Authenticated Staff / Admin Portal View
+        AdminDashboardScreen(
+            userSession = authState.user,
+            classes = rawClasses,
+            announcements = announcements,
+            auditLogs = auditLogs,
+            visitors = visitors,
+            isSyncing = syncState.isSyncing,
+            onCreateClass = { subject, type, inst, date, start, end, tz, grp, mode, plat, chan, loc, notes ->
+                viewModel.createClass(subject, type, inst, date, start, end, tz, grp, mode, plat, chan, loc, notes)
+            },
+            onUpdateClass = { viewModel.updateClass(it) },
+            onRescheduleClass = { entity, newDate, newStart, newEnd, reason ->
+                viewModel.rescheduleClass(entity, newDate, newStart, newEnd, reason)
+            },
+            onCancelClass = { entity, reason -> viewModel.cancelClass(entity, reason) },
+            onDeleteClass = { viewModel.deleteClass(it) },
+            onPostAnnouncement = { title, msg, prio, grp -> viewModel.postAnnouncement(title, msg, prio, grp) },
+            onRegisterVisitor = { name, email, purpose, grp -> viewModel.registerVisitor(name, email, purpose, grp) },
+            onRefresh = { viewModel.refreshData(force = true) },
+            onSignOut = { viewModel.logoutStaff() },
+            onExitAdmin = { viewModel.switchRole(UserRole.STUDENT) }
+        )
+    } else {
+        // Main Student Interface
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -133,6 +171,28 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                         }
                     },
                     actions = {
+                        // Foreground Sync Action
+                        if (syncState.isSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .padding(end = 4.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            IconButton(
+                                onClick = { viewModel.refreshData(force = true) },
+                                modifier = Modifier.testTag("topbar_refresh_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Sync Timetable",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
                         // Timezone Selector Chip
                         TextButton(
                             onClick = { showTimezoneDialog = true },
@@ -153,6 +213,33 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                             )
                         }
 
+                        // Staff Portal Access
+                        IconButton(
+                            onClick = {
+                                if (authState.isAuthenticated) {
+                                    viewModel.switchRole(UserRole.ADMIN)
+                                } else {
+                                    showStaffLoginDialog = true
+                                }
+                            },
+                            modifier = Modifier.testTag("topbar_staff_button")
+                        ) {
+                            if (authState.isAuthenticated) {
+                                BadgedBox(badge = { Badge { Text(authState.user?.role?.take(1) ?: "A") } }) {
+                                    Icon(
+                                        imageVector = Icons.Default.AdminPanelSettings,
+                                        contentDescription = "Staff Dashboard",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.AdminPanelSettings,
+                                    contentDescription = "Staff Sign In",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                 )
@@ -216,8 +303,10 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                         preferences = preferences,
                         selectedTimezone = selectedTimezone,
                         currentTimeMs = currentTimeMs,
+                        syncState = syncState,
                         onClassClick = { selectedClassForDetail = it },
-                        onChangeTimezoneClick = { showTimezoneDialog = true }
+                        onChangeTimezoneClick = { showTimezoneDialog = true },
+                        onRefresh = { viewModel.refreshData(force = true) }
                     )
                     1 -> TimetableScreen(
                         classes = classes,
@@ -231,7 +320,8 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                         onDateSelected = { viewModel.setSelectedDate(it) },
                         onGroupFilterSelected = { viewModel.setGroupFilter(it) },
                         onModeFilterSelected = { viewModel.setModeFilter(it) },
-                        onClassClick = { selectedClassForDetail = it }
+                        onClassClick = { selectedClassForDetail = it },
+                        onRefresh = { viewModel.refreshData(force = true) }
                     )
                     2 -> ReminderSettingsScreen(
                         selectedTimezone = selectedTimezone,
@@ -252,7 +342,8 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                     3 -> AnnouncementsScreen(
                         announcements = announcements,
                         onMarkAllRead = { viewModel.markAllAnnouncementsRead() },
-                        onMarkRead = { viewModel.markAnnouncementRead(it) }
+                        onMarkRead = { viewModel.markAnnouncementRead(it) },
+                        onRefresh = { viewModel.refreshData(force = true) }
                     )
                 }
             }
@@ -265,6 +356,22 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
             selectedTimezone = selectedTimezone,
             onTimezoneSelected = { viewModel.setTimezone(it) },
             onDismiss = { showTimezoneDialog = false }
+        )
+    }
+
+    // Staff Sign-in Dialog (Better Auth)
+    if (showStaffLoginDialog) {
+        StaffLoginDialog(
+            isLoading = authState.isLoading,
+            errorMessage = authState.errorMessage,
+            onLogin = { email, pass ->
+                viewModel.loginStaff(
+                    email = email,
+                    passcode = pass,
+                    onSuccess = { showStaffLoginDialog = false }
+                )
+            },
+            onDismiss = { showStaffLoginDialog = false }
         )
     }
 

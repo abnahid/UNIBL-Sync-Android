@@ -22,7 +22,7 @@ object PublicDataSyncScheduler {
             .setConstraints(connected)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
-        manager.enqueueUniqueWork(IMMEDIATE_WORK, ExistingWorkPolicy.KEEP, immediate)
+        manager.enqueueUniqueWork(IMMEDIATE_WORK, ExistingWorkPolicy.REPLACE, immediate)
 
         val periodic = PeriodicWorkRequestBuilder<PublicDataSyncWorker>(6, TimeUnit.HOURS)
             .setConstraints(connected)
