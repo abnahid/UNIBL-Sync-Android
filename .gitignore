@@ -1,0 +1,23 @@
+# Gradle / Android Studio
+.gradle/
+build/
+**/build/
+.idea/
+*.iml
+local.properties
+.kotlin/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# Local configuration and secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Generated APKs and reports
+*.apk
+*.aab
+*.apks
+reports/
