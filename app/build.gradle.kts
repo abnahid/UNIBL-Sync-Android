@@ -62,10 +62,36 @@ android {
     }
 
     // Release signing is supplied by CI/local environment variables.
-    // Debug builds use the repository debug keystore.
+    // Debug builds use the repository debug keystore (auto-generated if missing in CI).
+    val debugKeystoreFile = rootProject.file("debug.keystore").apply {
+        if (!exists()) {
+            val userKeystore = File(System.getProperty("user.home"), ".android/debug.keystore")
+            if (userKeystore.exists()) {
+                userKeystore.copyTo(this, overwrite = true)
+            } else {
+                try {
+                    val keytool = File(System.getProperty("java.home"), "bin/keytool")
+                        .takeIf { it.exists() }?.absolutePath ?: "keytool"
+                    ProcessBuilder(
+                        keytool,
+                        "-genkeypair",
+                        "-keystore", absolutePath,
+                        "-storepass", "android",
+                        "-alias", "androiddebugkey",
+                        "-keypass", "android",
+                        "-keyalg", "RSA",
+                        "-keysize", "2048",
+                        "-validity", "10000",
+                        "-dname", "CN=Android Debug,O=Android,C=US"
+                    ).start().waitFor()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     signingConfigs {
         create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
+            storeFile = if (debugKeystoreFile.exists()) debugKeystoreFile else file("${rootDir}/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"

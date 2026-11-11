@@ -35,6 +35,13 @@ jobs:
       - name: Configure Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Ensure debug keystore
+        shell: bash
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Run Android tests and debug build
         shell: bash
         run: |

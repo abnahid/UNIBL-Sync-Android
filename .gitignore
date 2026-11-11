@@ -13,6 +13,7 @@ captures/
 # Local configuration and secrets
 *.jks
 *.keystore
+!debug.keystore
 *.p12
 *.pem
 
