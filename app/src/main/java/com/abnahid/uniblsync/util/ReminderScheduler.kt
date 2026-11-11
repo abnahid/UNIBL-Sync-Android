@@ -82,15 +82,22 @@ object ReminderScheduler {
         val exactAvailable = canScheduleExactAlarms(context)
         try {
             if (exactAvailable) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    reminder.triggerEpochMs,
-                    pendingIntent
+                // AlarmClockInfo provides the highest priority wake-up in Android.
+                // It bypasses Doze mode and App Standby, triggering accurately even when offline or asleep.
+                val showIntent = Intent(context, com.abnahid.uniblsync.MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                }
+                val showPendingIntent = PendingIntent.getActivity(
+                    context,
+                    requestCodeFor(reminder.reminderKey),
+                    showIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )
+                val clockInfo = AlarmManager.AlarmClockInfo(reminder.triggerEpochMs, showPendingIntent)
+                alarmManager.setAlarmClock(clockInfo, pendingIntent)
             } else {
-                // Fallback: inexact alarm. Delivery may be deferred by the OS;
-                // Android never fires it earlier than requested.
-                alarmManager.set(
+                // Fallback: setAndAllowWhileIdle fires even if the device is in Doze / Idle mode.
+                alarmManager.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     reminder.triggerEpochMs,
                     pendingIntent
@@ -99,9 +106,13 @@ object ReminderScheduler {
         } catch (_: SecurityException) {
             // Exact alarm permission was revoked between the check and the call.
             try {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, reminder.triggerEpochMs, pendingIntent)
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerEpochMs, pendingIntent)
             } catch (_: Exception) {
-                // Out of options: the reminder stays in the Room table and is re-armed on next app open / reboot.
+                try {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, reminder.triggerEpochMs, pendingIntent)
+                } catch (_: Exception) {
+                    // Out of options: the reminder stays in the Room table and is re-armed on next app open / reboot.
+                }
             }
         }
     }
@@ -133,6 +144,70 @@ object ReminderScheduler {
             context,
             Manifest.permission.POST_NOTIFICATIONS
         ) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+
+    const val LRM_REQUEST_CODE = 9991
+
+    fun scheduleLrmTest(context: Context, durationMinutes: Int) {
+        val targetEpochMs = System.currentTimeMillis() + durationMinutes * 60 * 1000L
+        val store = ReminderGlobalStore.getInstance(context)
+        store.lrmTestDurationMinutes = durationMinutes
+        store.lrmTestTargetEpochMs = targetEpochMs
+        store.isLrmTestActive = true
+
+        val alarmManager = alarmManager(context)
+        val intent = Intent(context, ClassReminderReceiver::class.java).apply {
+            action = ClassReminderReceiver.ACTION_LRM_TEST_REMINDER
+            putExtra(ClassReminderReceiver.EXTRA_LRM_MINUTES, durationMinutes)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            LRM_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val showIntent = Intent(context, com.abnahid.uniblsync.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val showPendingIntent = PendingIntent.getActivity(
+            context,
+            LRM_REQUEST_CODE,
+            showIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val exactAvailable = canScheduleExactAlarms(context)
+        try {
+            if (exactAvailable) {
+                val clockInfo = AlarmManager.AlarmClockInfo(targetEpochMs, showPendingIntent)
+                alarmManager.setAlarmClock(clockInfo, pendingIntent)
+            } else {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, targetEpochMs, pendingIntent)
+            }
+        } catch (_: SecurityException) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, targetEpochMs, pendingIntent)
+        }
+    }
+
+    fun cancelLrmTest(context: Context) {
+        val store = ReminderGlobalStore.getInstance(context)
+        store.isLrmTestActive = false
+        store.lrmTestTargetEpochMs = 0L
+
+        val intent = Intent(context, ClassReminderReceiver::class.java).apply {
+            action = ClassReminderReceiver.ACTION_LRM_TEST_REMINDER
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            LRM_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
+        )
+        if (pendingIntent != null) {
+            alarmManager(context).cancel(pendingIntent)
+        }
+    }
 
     private fun alarmManager(context: Context): AlarmManager =
         context.getSystemService(Context.ALARM_SERVICE) as AlarmManager

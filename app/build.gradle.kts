@@ -62,8 +62,15 @@ android {
     }
 
     // Release signing is supplied by CI/local environment variables.
-    // Debug builds use Android's generated default debug keystore.
+    // Debug builds use the repository debug keystore.
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+
         create("release") {
             val keystorePath =
                 System.getenv("KEYSTORE_PATH")
@@ -99,7 +106,7 @@ android {
         }
 
         debug {
-            // AGP manages the default debug signing configuration.
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
     }
 

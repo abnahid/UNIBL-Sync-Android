@@ -52,9 +52,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.platform.LocalContext
 import com.abnahid.uniblsync.data.model.ClassEntity
 import com.abnahid.uniblsync.data.sync.PublicDataSyncScheduler
 import com.abnahid.uniblsync.ui.ClassTimeViewModel
+import com.abnahid.uniblsync.ui.components.BatteryOptimizationDialog
 import com.abnahid.uniblsync.ui.components.ClassDetailSheet
 import com.abnahid.uniblsync.ui.components.TimezoneSelectorDialog
 import com.abnahid.uniblsync.ui.screens.AnnouncementsScreen
@@ -143,15 +145,28 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val isAlarmEnabled by viewModel.isAlarmEnabled.collectAsStateWithLifecycle()
     val isVibrateEnabled by viewModel.isVibrateEnabled.collectAsStateWithLifecycle()
     val isSoundPlaying by viewModel.isSoundPlaying.collectAsStateWithLifecycle()
+    val lrmTestState by viewModel.lrmTestState.collectAsStateWithLifecycle()
 
     // Navigation and Dialog state
     var studentNavIndex by remember { mutableIntStateOf(0) } // 0: Home, 1: Timetable, 2: Reminders, 3: Notices
     var showTimezoneDialog by remember { mutableStateOf(false) }
     var selectedClassForDetail by remember { mutableStateOf<ClassEntity?>(null) }
-
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Android is a timetable consumer. Staff schedule management remains in the web admin.
+    val context = LocalContext.current
+    val store = remember { ReminderGlobalStore.getInstance(context) }
+    var showFirstLaunchOptimizationDialog by remember {
+        mutableStateOf(!store.batteryOptimizationPromptAsked)
+    }
+
+    if (showFirstLaunchOptimizationDialog) {
+        BatteryOptimizationDialog(
+            onDismiss = {
+                store.batteryOptimizationPromptAsked = true
+                showFirstLaunchOptimizationDialog = false
+            }
+        )
+    }
     run {
         // Main Student Interface
         Scaffold(
@@ -307,12 +322,16 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                         isAlarmEnabled = isAlarmEnabled,
                         isVibrateEnabled = isVibrateEnabled,
                         isSoundPlaying = isSoundPlaying,
+                        lrmTestState = lrmTestState,
                         onLeadMinutesChange = { viewModel.setGlobalReminderLead(it) },
                         onToneChange = { viewModel.setSelectedSoundTone(it) },
                         onAlarmToggle = { viewModel.toggleAlarm(it) },
                         onVibrateToggle = { viewModel.toggleVibrate(it) },
                         onPlayTone = { viewModel.playTonePreview(it) },
                         onStopTone = { viewModel.stopTonePreview() },
+                        onStartLrmTest = { viewModel.startLrmTest(it) },
+                        onCancelLrmTest = { viewModel.cancelLrmTest() },
+                        onSetLrmDuration = { viewModel.setLrmDuration(it) },
                         onSendTestReminder = { viewModel.sendTestReminder() },
                         onChangeTimezoneClick = { showTimezoneDialog = true }
                     )

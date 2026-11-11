@@ -1,0 +1,6 @@
+{
+  "name": "UNIBL Sync",
+  "description": "UNIBL schedule synchronization and timetable management app",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

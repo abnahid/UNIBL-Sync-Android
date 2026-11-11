@@ -12,6 +12,23 @@ import android.content.Intent
 class ClassReminderReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_LRM_TEST_REMINDER) {
+            val testMinutes = intent.getIntExtra(EXTRA_LRM_MINUTES, 2)
+            val store = ReminderGlobalStore.getInstance(context)
+            store.isLrmTestActive = false
+            store.lrmTestTargetEpochMs = 0L
+            store.lrmLastDeliveredEpochMs = System.currentTimeMillis()
+
+            NotificationHelper.sendClassReminderNotification(
+                context = context,
+                notificationId = 8888,
+                title = "LRM Test Alarm • Verified",
+                message = "Success! Test alarm fired after $testMinutes min. Your device woke up and delivered this offline alert on time.",
+                vibrate = true
+            )
+            return
+        }
+
         if (intent.action != ACTION_CLASS_REMINDER) return
 
         val reminderKey = intent.getStringExtra(EXTRA_REMINDER_KEY)
@@ -50,6 +67,8 @@ class ClassReminderReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_CLASS_REMINDER = "com.abnahid.uniblsync.ACTION_CLASS_REMINDER"
+        const val ACTION_LRM_TEST_REMINDER = "com.abnahid.uniblsync.ACTION_LRM_TEST_REMINDER"
+        const val EXTRA_LRM_MINUTES = "lrmMinutes"
 
         const val EXTRA_REMINDER_KEY = "reminderKey"
         const val EXTRA_SUBJECT = "subject"

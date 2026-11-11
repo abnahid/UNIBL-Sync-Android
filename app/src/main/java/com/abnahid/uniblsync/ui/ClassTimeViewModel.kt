@@ -16,6 +16,7 @@ import com.abnahid.uniblsync.data.schedule.ScheduleMerger
 import com.abnahid.uniblsync.data.sync.PublicDataSyncScheduler
 import com.abnahid.uniblsync.util.NotificationHelper
 import com.abnahid.uniblsync.util.ReminderGlobalStore
+import com.abnahid.uniblsync.util.ReminderScheduler
 import com.abnahid.uniblsync.util.SoundPreviewPlayer
 import com.abnahid.uniblsync.util.TimezoneHelper
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,14 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+
+data class LrmTestUiState(
+    val isActive: Boolean = false,
+    val durationMinutes: Int = 2,
+    val targetEpochMs: Long = 0L,
+    val remainingSeconds: Long = 0L,
+    val lastDeliveredEpochMs: Long = 0L
+)
 
 enum class TimetableTab {
     DAILY,
@@ -117,6 +126,18 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _isSoundPlaying = MutableStateFlow(false)
     val isSoundPlaying: StateFlow<Boolean> = _isSoundPlaying.asStateFlow()
 
+    // LRM (Live Reminder Module) Test Alarm State
+    private val _lrmTestState = MutableStateFlow(
+        LrmTestUiState(
+            isActive = reminderGlobalStore.isLrmTestActive && reminderGlobalStore.lrmTestTargetEpochMs > System.currentTimeMillis(),
+            durationMinutes = reminderGlobalStore.lrmTestDurationMinutes,
+            targetEpochMs = reminderGlobalStore.lrmTestTargetEpochMs,
+            remainingSeconds = ((reminderGlobalStore.lrmTestTargetEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L),
+            lastDeliveredEpochMs = reminderGlobalStore.lrmLastDeliveredEpochMs
+        )
+    )
+    val lrmTestState: StateFlow<LrmTestUiState> = _lrmTestState.asStateFlow()
+
     private val lastSemesterSeedRangeDays: Int = 21
     private val nextSemesterSeedRangeDays: Int = 90
 
@@ -191,10 +212,12 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     init {
-        // Start 1-second ticker for live student clock
+        // Start 1-second ticker for live student clock and LRM countdown
         viewModelScope.launch {
             while (isActive) {
-                _currentTimeEpochMs.value = System.currentTimeMillis()
+                val now = System.currentTimeMillis()
+                _currentTimeEpochMs.value = now
+                syncLrmState(now)
                 delay(1000)
             }
         }
@@ -318,6 +341,38 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         if (_isAlarmEnabled.value) {
             playTonePreview(_selectedSoundTone.value)
         }
+    }
+
+    private fun syncLrmState(now: Long = System.currentTimeMillis()) {
+        val targetMs = reminderGlobalStore.lrmTestTargetEpochMs
+        val isActive = reminderGlobalStore.isLrmTestActive && targetMs > now
+        if (reminderGlobalStore.isLrmTestActive && targetMs <= now && targetMs > 0L) {
+            reminderGlobalStore.isLrmTestActive = false
+        }
+        val remaining = if (isActive) (targetMs - now) / 1000L else 0L
+        _lrmTestState.value = LrmTestUiState(
+            isActive = isActive,
+            durationMinutes = reminderGlobalStore.lrmTestDurationMinutes,
+            targetEpochMs = targetMs,
+            remainingSeconds = remaining.coerceAtLeast(0L),
+            lastDeliveredEpochMs = reminderGlobalStore.lrmLastDeliveredEpochMs
+        )
+    }
+
+    fun startLrmTest(minutes: Int) {
+        reminderGlobalStore.lrmTestDurationMinutes = minutes
+        ReminderScheduler.scheduleLrmTest(getApplication(), minutes)
+        syncLrmState()
+    }
+
+    fun cancelLrmTest() {
+        ReminderScheduler.cancelLrmTest(getApplication())
+        syncLrmState()
+    }
+
+    fun setLrmDuration(minutes: Int) {
+        reminderGlobalStore.lrmTestDurationMinutes = minutes
+        syncLrmState()
     }
 
     fun markAnnouncementRead(id: String) {
