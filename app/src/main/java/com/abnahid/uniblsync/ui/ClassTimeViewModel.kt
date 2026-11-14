@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.abnahid.uniblsync.data.local.AppDatabase
 import com.abnahid.uniblsync.data.model.AnnouncementEntity
 import com.abnahid.uniblsync.data.model.ClassEntity
+import com.abnahid.uniblsync.data.model.ClassReminderStateEntity
+import com.abnahid.uniblsync.data.model.ReminderDiagnosticLogEntity
 import com.abnahid.uniblsync.data.model.ReminderPreferenceEntity
 import com.abnahid.uniblsync.data.remote.NetworkClientProvider
 import com.abnahid.uniblsync.data.remote.PublicApiClient
@@ -75,14 +77,11 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _currentTimeEpochMs = MutableStateFlow(System.currentTimeMillis())
     val currentTimeEpochMs: StateFlow<Long> = _currentTimeEpochMs.asStateFlow()
 
-    // Student Selected Timezone
-    private val _selectedTimezone = MutableStateFlow(
-        try {
-            TimezoneHelper.BANGLADESH_TIMEZONE
-        } catch (_: Exception) {
-            TimezoneHelper.BOSNIA_TIMEZONE
-        }
-    )
+    // Global Reminder Settings (persisted, not only Compose state)
+    private val reminderGlobalStore = ReminderGlobalStore.getInstance(application)
+
+    // Student Selected Timezone (persisted)
+    private val _selectedTimezone = MutableStateFlow(reminderGlobalStore.selectedTimezone)
     val selectedTimezone: StateFlow<String> = _selectedTimezone.asStateFlow()
 
     // Sync State
@@ -106,12 +105,13 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _selectedDate = MutableStateFlow(getTodayDateIso(_selectedTimezone.value))
     val selectedDate: StateFlow<String> = _selectedDate.asStateFlow()
 
-    // Global Reminder Settings (persisted, not only Compose state)
-    private val reminderGlobalStore = ReminderGlobalStore.getInstance(application)
-
     private val _globalReminderLeadMinutes =
-        MutableStateFlow(ReminderGlobalStore.getInstance(application).leadMinutes)
+        MutableStateFlow(reminderGlobalStore.leadMinutes)
     val globalReminderLeadMinutes: StateFlow<Int> = _globalReminderLeadMinutes.asStateFlow()
+
+    private val _gracePeriodMinutes =
+        MutableStateFlow(reminderGlobalStore.gracePeriodMinutes)
+    val gracePeriodMinutes: StateFlow<Int> = _gracePeriodMinutes.asStateFlow()
 
     private val _selectedSoundTone =
         MutableStateFlow(reminderGlobalStore.soundTone)
@@ -150,7 +150,7 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         database.recurringScheduleDao().getAllSchedules(),
         database.scheduleOverrideDao().getAllOverrides()
     ) { schedules, overrides ->
-        val today = LocalDate.now()
+        val today = LocalDate.now(ZoneId.of(TimezoneHelper.BOSNIA_TIMEZONE))
         val effectiveStart = today.minusDays(lastSemesterSeedRangeDays.toLong())
         val effectiveEnd = today.plusDays(nextSemesterSeedRangeDays.toLong())
         withContext(Dispatchers.Default) {
@@ -173,6 +173,12 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val allPreferences: StateFlow<List<ReminderPreferenceEntity>> = repository.allPreferences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val reminderStates: StateFlow<List<ClassReminderStateEntity>> = repository.allReminderStates
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val diagnosticLogs: StateFlow<List<ReminderDiagnosticLogEntity>> = repository.recentDiagnosticLogs
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val lastSuccessfulSync = repository.lastSuccessfulSync
@@ -272,6 +278,8 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setTimezone(tzId: String) {
         _selectedTimezone.value = tzId
+        reminderGlobalStore.selectedTimezone = tzId
+        reconcileReminders()
     }
 
     fun resetTimetableFilters() {
@@ -303,21 +311,43 @@ class ClassTimeViewModel(application: Application) : AndroidViewModel(applicatio
     fun setGlobalReminderLead(minutes: Int) {
         _globalReminderLeadMinutes.value = minutes
         reminderGlobalStore.leadMinutes = minutes
+        reconcileReminders()
+    }
+
+    fun setGracePeriodMinutes(minutes: Int) {
+        _gracePeriodMinutes.value = minutes
+        reminderGlobalStore.gracePeriodMinutes = minutes
+        reconcileReminders()
     }
 
     fun setSelectedSoundTone(tone: String) {
         _selectedSoundTone.value = tone
         reminderGlobalStore.soundTone = tone
+        reconcileReminders()
     }
 
     fun toggleAlarm(enabled: Boolean) {
         _isAlarmEnabled.value = enabled
         reminderGlobalStore.isAlarmEnabled = enabled
+        reconcileReminders()
     }
 
     fun toggleVibrate(enabled: Boolean) {
         _isVibrateEnabled.value = enabled
         reminderGlobalStore.isVibrateEnabled = enabled
+        reconcileReminders()
+    }
+
+    fun reconcileReminders() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.reconcileReminders() }
+        }
+    }
+
+    fun clearDiagnosticLogs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.clearDiagnosticLogs() }
+        }
     }
 
     fun playTonePreview(tone: String) {

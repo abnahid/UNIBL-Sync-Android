@@ -8,23 +8,43 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
+import com.abnahid.uniblsync.data.model.ClassReminderStateEntity
 import com.abnahid.uniblsync.data.model.ScheduledReminderEntity
 
+sealed class ScheduleOutcome(val statusCode: String) {
+    data object Exact : ScheduleOutcome(ClassReminderStateEntity.STATUS_SCHEDULED_EXACT)
+    data class InexactFallback(val reason: String) :
+        ScheduleOutcome(ClassReminderStateEntity.STATUS_SCHEDULED_INEXACT)
+    data class Failed(val reason: String) :
+        ScheduleOutcome(ClassReminderStateEntity.STATUS_FAILED)
+}
+
 /**
- * Arms exact (or best effort inexact) AlarmManager alarms for class reminders.
+ * Arms exact (or explicit inexact fallback) AlarmManager RTC_WAKEUP alarms
+ * for two-stage class reminders.
  *
- * PendingIntent identity: the explicit receiver is targeted with a unique
- * request code plus a data URI carrying the reminderKey, so re-arming the same
- * occurrence updates its alarm instead of creating duplicates.
+ * PendingIntent identity: the explicit receiver is targeted with a stage-isolated
+ * request code AND a unique data URI (`uniblsync://reminder/{stage}/{reminderKey}`),
+ * preventing collisions across classes or stages.
  */
 object ReminderScheduler {
 
-    private const val ACTION_CLASS_REMINDER = "com.abnahid.uniblsync.ACTION_CLASS_REMINDER"
-    private const val EXTRA_REMINDER_KEY = "reminderKey"
+    private const val TAG = "UniblReminderScheduler"
+    private const val ACTION_CLASS_REMINDER = ClassReminderReceiver.ACTION_CLASS_REMINDER
+    private const val EXTRA_REMINDER_KEY = ClassReminderReceiver.EXTRA_REMINDER_KEY
 
-    /** Stable request code derived from the reminder key (collision masked to positive range). */
-    fun requestCodeFor(reminderKey: String): Int = reminderKey.hashCode() and Int.MAX_VALUE
+    /**
+     * Collision-safe request code separating ADVANCE (bit 0 = 0) from FINAL (bit 0 = 1).
+     */
+    fun requestCodeFor(
+        reminderKey: String,
+        stage: String = ScheduledReminderEntity.STAGE_ADVANCE
+    ): Int {
+        val stageBit = if (stage == ScheduledReminderEntity.STAGE_FINAL) 1 else 0
+        return ((reminderKey.hashCode() and 0x3FFFFFFF) shl 1) or stageBit
+    }
 
     fun canScheduleExactAlarms(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
@@ -32,24 +52,32 @@ object ReminderScheduler {
         return alarmManager.canScheduleExactAlarms()
     }
 
-    fun alarmIntent(context: Context, reminderKey: String): PendingIntent {
+    fun alarmIntent(
+        context: Context,
+        reminderKey: String,
+        stage: String = ScheduledReminderEntity.STAGE_ADVANCE
+    ): PendingIntent? {
         val intent = Intent(context, ClassReminderReceiver::class.java).apply {
             action = ACTION_CLASS_REMINDER
-            data = Uri.parse("uniblsync://reminder/${Uri.encode(reminderKey)}")
+            data = Uri.parse("uniblsync://reminder/$stage/${Uri.encode(reminderKey)}")
         }
         return PendingIntent.getBroadcast(
             context,
-            requestCodeFor(reminderKey),
+            requestCodeFor(reminderKey, stage),
             intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_NO_CREATE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
         )
     }
 
     private fun freshAlarmIntent(context: Context, reminder: ScheduledReminderEntity): Intent =
         Intent(context, ClassReminderReceiver::class.java).apply {
             action = ACTION_CLASS_REMINDER
-            data = Uri.parse("uniblsync://reminder/${Uri.encode(reminder.reminderKey)}")
+            data = Uri.parse("uniblsync://reminder/${reminder.stage}/${Uri.encode(reminder.reminderKey)}")
             putExtra(EXTRA_REMINDER_KEY, reminder.reminderKey)
+            putExtra(ClassReminderReceiver.EXTRA_CLASS_ID, reminder.classId)
+            putExtra(ClassReminderReceiver.EXTRA_OCCURRENCE_DATE, reminder.occurrenceDate)
+            putExtra(ClassReminderReceiver.EXTRA_STAGE, reminder.stage)
+            putExtra(ClassReminderReceiver.EXTRA_CLASS_START_EPOCH_MS, reminder.classStartEpochMs)
             putExtra(ClassReminderReceiver.EXTRA_SUBJECT, reminder.subject)
             putExtra(ClassReminderReceiver.EXTRA_CLASS_TYPE, reminder.classType)
             putExtra(ClassReminderReceiver.EXTRA_GROUP, reminder.groupName)
@@ -63,64 +91,84 @@ object ReminderScheduler {
         }
 
     /**
-     * Arms the alarm for [reminder]. Assumes the trigger time has already been
-     * validated as still in the future by [ReminderReconciler].
+     * Arms the RTC_WAKEUP alarm for [reminder] using setExactAndAllowWhileIdle when permitted,
+     * falling back to setAndAllowWhileIdle when SCHEDULE_EXACT_ALARM is denied.
      *
-     * Exact alarms are used when Android grants them; otherwise the system
-     * inexact alarm is used as a fallback (which may be delayed by the OS, never
-     * fired earlier than requested).
+     * Returns an explicit [ScheduleOutcome] so failures or inexact fallbacks are never hidden.
      */
-    fun schedule(context: Context, reminder: ScheduledReminderEntity) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    fun schedule(context: Context, reminder: ScheduledReminderEntity): ScheduleOutcome {
+        val alarmManager = alarmManager(context)
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            requestCodeFor(reminder.reminderKey),
+            requestCodeFor(reminder.reminderKey, reminder.stage),
             freshAlarmIntent(context, reminder),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val exactAvailable = canScheduleExactAlarms(context)
-        try {
+        return try {
             if (exactAvailable) {
-                // AlarmClockInfo provides the highest priority wake-up in Android.
-                // It bypasses Doze mode and App Standby, triggering accurately even when offline or asleep.
-                val showIntent = Intent(context, com.abnahid.uniblsync.MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                }
-                val showPendingIntent = PendingIntent.getActivity(
-                    context,
-                    requestCodeFor(reminder.reminderKey),
-                    showIntent,
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    reminder.triggerEpochMs,
+                    pendingIntent
                 )
-                val clockInfo = AlarmManager.AlarmClockInfo(reminder.triggerEpochMs, showPendingIntent)
-                alarmManager.setAlarmClock(clockInfo, pendingIntent)
+                ScheduleOutcome.Exact
             } else {
-                // Fallback: setAndAllowWhileIdle fires even if the device is in Doze / Idle mode.
                 alarmManager.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     reminder.triggerEpochMs,
                     pendingIntent
                 )
+                ScheduleOutcome.InexactFallback(
+                    "SCHEDULE_EXACT_ALARM denied; scheduled with inexact setAndAllowWhileIdle fallback (exact delivery not guaranteed)"
+                )
             }
-        } catch (_: SecurityException) {
-            // Exact alarm permission was revoked between the check and the call.
+        } catch (secEx: SecurityException) {
+            Log.w(TAG, "Exact alarm SecurityException for ${reminder.reminderKey}: ${secEx.message}")
             try {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerEpochMs, pendingIntent)
-            } catch (_: Exception) {
-                try {
-                    alarmManager.set(AlarmManager.RTC_WAKEUP, reminder.triggerEpochMs, pendingIntent)
-                } catch (_: Exception) {
-                    // Out of options: the reminder stays in the Room table and is re-armed on next app open / reboot.
-                }
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    reminder.triggerEpochMs,
+                    pendingIntent
+                )
+                ScheduleOutcome.InexactFallback(
+                    "Exact alarm permission revoked during scheduling; fell back to setAndAllowWhileIdle"
+                )
+            } catch (fallbackEx: Exception) {
+                Log.e(TAG, "Alarm fallback failed for ${reminder.reminderKey}: ${fallbackEx.message}")
+                ScheduleOutcome.Failed(fallbackEx.message ?: "AlarmManager rejected alarm")
             }
+        } catch (ex: Exception) {
+            Log.e(TAG, "Alarm scheduling failed for ${reminder.reminderKey}: ${ex.message}")
+            ScheduleOutcome.Failed(ex.message ?: "Unexpected AlarmManager error")
         }
     }
 
-    fun cancel(context: Context, reminderKey: String) {
+    fun cancel(
+        context: Context,
+        reminderKey: String,
+        stage: String = ScheduledReminderEntity.STAGE_ADVANCE
+    ) {
         try {
-            alarmIntent(context, reminderKey)?.let { alarmManager(context).cancel(it) }
+            alarmIntent(context, reminderKey, stage)?.let {
+                alarmManager(context).cancel(it)
+                it.cancel()
+            }
         } catch (_: Exception) { }
+    }
+
+    fun cancelBothStages(context: Context, classId: String, occurrenceDate: String) {
+        cancel(
+            context,
+            ScheduledReminderEntity.buildKey(classId, occurrenceDate, ScheduledReminderEntity.STAGE_ADVANCE),
+            ScheduledReminderEntity.STAGE_ADVANCE
+        )
+        cancel(
+            context,
+            ScheduledReminderEntity.buildKey(classId, occurrenceDate, ScheduledReminderEntity.STAGE_FINAL),
+            ScheduledReminderEntity.STAGE_FINAL
+        )
     }
 
     fun openExactAlarmSettings(context: Context): Boolean {
@@ -128,6 +176,7 @@ object ReminderScheduler {
         return try {
             val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
                 .setData(Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             if (intent.resolveActivity(context.packageManager) != null) {
                 context.startActivity(intent)
                 true
@@ -147,7 +196,7 @@ object ReminderScheduler {
 
     const val LRM_REQUEST_CODE = 9991
 
-    fun scheduleLrmTest(context: Context, durationMinutes: Int) {
+    fun scheduleLrmTest(context: Context, durationMinutes: Int): ScheduleOutcome {
         val targetEpochMs = System.currentTimeMillis() + durationMinutes * 60 * 1000L
         val store = ReminderGlobalStore.getInstance(context)
         store.lrmTestDurationMinutes = durationMinutes
@@ -167,26 +216,28 @@ object ReminderScheduler {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val showIntent = Intent(context, com.abnahid.uniblsync.MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        }
-        val showPendingIntent = PendingIntent.getActivity(
-            context,
-            LRM_REQUEST_CODE,
-            showIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
         val exactAvailable = canScheduleExactAlarms(context)
-        try {
+        return try {
             if (exactAvailable) {
-                val clockInfo = AlarmManager.AlarmClockInfo(targetEpochMs, showPendingIntent)
-                alarmManager.setAlarmClock(clockInfo, pendingIntent)
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    targetEpochMs,
+                    pendingIntent
+                )
+                ScheduleOutcome.Exact
             } else {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, targetEpochMs, pendingIntent)
+                ScheduleOutcome.InexactFallback("Exact alarm permission denied for LRM test")
             }
         } catch (_: SecurityException) {
-            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, targetEpochMs, pendingIntent)
+            try {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, targetEpochMs, pendingIntent)
+                ScheduleOutcome.InexactFallback("Exact alarm permission revoked for LRM test")
+            } catch (ex: Exception) {
+                ScheduleOutcome.Failed(ex.message ?: "LRM test scheduling failed")
+            }
+        } catch (ex: Exception) {
+            ScheduleOutcome.Failed(ex.message ?: "LRM test scheduling failed")
         }
     }
 
@@ -206,6 +257,7 @@ object ReminderScheduler {
         )
         if (pendingIntent != null) {
             alarmManager(context).cancel(pendingIntent)
+            pendingIntent.cancel()
         }
     }
 

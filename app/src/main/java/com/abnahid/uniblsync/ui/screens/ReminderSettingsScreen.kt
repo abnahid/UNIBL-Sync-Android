@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AlarmOn
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -54,6 +55,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,8 +68,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.abnahid.uniblsync.data.model.ClassReminderStateEntity
+import com.abnahid.uniblsync.data.model.ReminderDiagnosticLogEntity
 import com.abnahid.uniblsync.ui.LrmTestUiState
 import com.abnahid.uniblsync.ui.components.BatteryOptimizationDialog
+import com.abnahid.uniblsync.ui.components.ReminderDiagnosticsDialog
 import com.abnahid.uniblsync.ui.theme.EmeraldSuccess
 import com.abnahid.uniblsync.ui.theme.RoseError
 import com.abnahid.uniblsync.ui.theme.AmberWarning
@@ -85,12 +93,16 @@ import java.util.Locale
 fun ReminderSettingsScreen(
     selectedTimezone: String,
     globalLeadMinutes: Int,
+    gracePeriodMinutes: Int = 5,
     selectedTone: String,
     isAlarmEnabled: Boolean,
     isVibrateEnabled: Boolean,
     isSoundPlaying: Boolean,
     lrmTestState: LrmTestUiState = LrmTestUiState(),
+    reminderStates: List<ClassReminderStateEntity> = emptyList(),
+    diagnosticLogs: List<ReminderDiagnosticLogEntity> = emptyList(),
     onLeadMinutesChange: (Int) -> Unit,
+    onGracePeriodChange: (Int) -> Unit = {},
     onToneChange: (String) -> Unit,
     onAlarmToggle: (Boolean) -> Unit,
     onVibrateToggle: (Boolean) -> Unit,
@@ -100,20 +112,39 @@ fun ReminderSettingsScreen(
     onCancelLrmTest: () -> Unit = {},
     onSetLrmDuration: (Int) -> Unit = {},
     onSendTestReminder: () -> Unit,
-    onChangeTimezoneClick: () -> Unit
+    onChangeTimezoneClick: () -> Unit,
+    onReconcileNow: () -> Unit = {},
+    onClearDiagnosticLogs: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var hasPermission by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
+    var exactAlarmsAvailable by remember { mutableStateOf(ReminderScheduler.canScheduleExactAlarms(context)) }
     var isBatteryOptimizedIgnored by remember { mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)) }
     var showBatteryOptimizationGuide by remember { mutableStateOf(false) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasPermission = NotificationHelper.hasNotificationPermission(context)
+                exactAlarmsAvailable = ReminderScheduler.canScheduleExactAlarms(context)
+                isBatteryOptimizedIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasPermission = granted
+        if (granted) onReconcileNow()
     }
 
     val leadOptions = listOf(5, 10, 15, 20, 30, 60)
+    val graceOptions = listOf(3, 5, 10)
 
     Column(
         modifier = Modifier
@@ -193,7 +224,6 @@ fun ReminderSettingsScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Exact Alarm Capability Status (Android 12+ SCHEDULE_EXACT_ALARM)
-        val exactAlarmsAvailable = remember { ReminderScheduler.canScheduleExactAlarms(context) }
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = if (exactAlarmsAvailable) EmeraldSuccess.copy(alpha = 0.12f)
@@ -218,15 +248,15 @@ fun ReminderSettingsScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = if (exactAlarmsAvailable) "Exact alarms available"
-                        else "Exact alarms restricted",
+                        else "Exact alarms restricted (Inexact Fallback)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = if (exactAlarmsAvailable)
-                            "Reminders will ring at the exact minute you choose."
+                            "Both advance reminders and exact class-start alerts will fire on time."
                         else
-                            "Reminders may be delayed a few minutes by Android. Allow exact alarms for on-the-minute delivery.",
+                            "Exact delivery cannot be guaranteed when SCHEDULE_EXACT_ALARM is denied. Fallback inexact alarms are active — tap Allow for on-the-minute alerts.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -382,6 +412,32 @@ fun ReminderSettingsScreen(
                             selected = globalLeadMinutes == mins,
                             onClick = { onLeadMinutesChange(mins) },
                             label = { Text("${mins}m before") }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Two-Stage Catch-Up Grace Period",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Stage 2 always alerts once at class start. If opened slightly late within this grace window, one final alert is delivered without stale repeats.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    graceOptions.forEach { mins ->
+                        FilterChip(
+                            selected = gracePeriodMinutes == mins,
+                            onClick = { onGracePeriodChange(mins) },
+                            label = { Text("${mins}m grace") }
                         )
                     }
                 }
@@ -679,6 +735,31 @@ fun ReminderSettingsScreen(
             Icon(imageVector = Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text("Instant Notification Sound Preview")
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Reminder Diagnostics Inspector Button
+        OutlinedButton(
+            onClick = { showDiagnosticsDialog = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("open_diagnostics_button")
+        ) {
+            Icon(imageVector = Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Reminder Diagnostics & Logs (${reminderStates.size})")
+        }
+
+        if (showDiagnosticsDialog) {
+            ReminderDiagnosticsDialog(
+                selectedTimezone = selectedTimezone,
+                reminderStates = reminderStates,
+                diagnosticLogs = diagnosticLogs,
+                onReconcileNow = onReconcileNow,
+                onClearLogs = onClearDiagnosticLogs,
+                onDismiss = { showDiagnosticsDialog = false }
+            )
         }
 
         Spacer(modifier = Modifier.height(32.dp))

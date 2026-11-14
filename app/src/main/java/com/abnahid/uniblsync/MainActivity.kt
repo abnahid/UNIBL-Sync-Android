@@ -53,7 +53,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalContext
+import com.abnahid.uniblsync.data.local.AppDatabase
 import com.abnahid.uniblsync.data.model.ClassEntity
+import com.abnahid.uniblsync.data.schedule.ReminderReconciler
 import com.abnahid.uniblsync.data.sync.PublicDataSyncScheduler
 import com.abnahid.uniblsync.ui.ClassTimeViewModel
 import com.abnahid.uniblsync.ui.components.BatteryOptimizationDialog
@@ -76,11 +78,17 @@ class MainActivity : ComponentActivity() {
     /** Ask for POST_NOTIFICATIONS once (Android 13+; silently granted below that). */
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) {
-                // Reminders cannot be delivered without the permission; the
-                // Reminders screen explains how to enable it again.
-            }
             ReminderGlobalStore.getInstance(this).notificationPermissionAsked = true
+            if (granted) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        ReminderReconciler.reconcileArmedAlarms(
+                            applicationContext,
+                            AppDatabase.getDatabase(applicationContext)
+                        )
+                    }
+                }
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,6 +120,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                ReminderReconciler.reconcileArmedAlarms(
+                    applicationContext,
+                    AppDatabase.getDatabase(applicationContext)
+                )
+            }
             ReleaseUpdateChecker.notifyIfNewRelease(applicationContext)
             PublicDataSyncScheduler.schedule(applicationContext)
         }
@@ -141,11 +155,14 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
     val selectedModeFilter by viewModel.selectedModeFilter.collectAsStateWithLifecycle()
 
     val globalLeadMinutes by viewModel.globalReminderLeadMinutes.collectAsStateWithLifecycle()
+    val gracePeriodMinutes by viewModel.gracePeriodMinutes.collectAsStateWithLifecycle()
     val selectedSoundTone by viewModel.selectedSoundTone.collectAsStateWithLifecycle()
     val isAlarmEnabled by viewModel.isAlarmEnabled.collectAsStateWithLifecycle()
     val isVibrateEnabled by viewModel.isVibrateEnabled.collectAsStateWithLifecycle()
     val isSoundPlaying by viewModel.isSoundPlaying.collectAsStateWithLifecycle()
     val lrmTestState by viewModel.lrmTestState.collectAsStateWithLifecycle()
+    val reminderStates by viewModel.reminderStates.collectAsStateWithLifecycle()
+    val diagnosticLogs by viewModel.diagnosticLogs.collectAsStateWithLifecycle()
 
     // Navigation and Dialog state
     var studentNavIndex by remember { mutableIntStateOf(0) } // 0: Home, 1: Timetable, 2: Reminders, 3: Notices
@@ -318,12 +335,16 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                     2 -> ReminderSettingsScreen(
                         selectedTimezone = selectedTimezone,
                         globalLeadMinutes = globalLeadMinutes,
+                        gracePeriodMinutes = gracePeriodMinutes,
                         selectedTone = selectedSoundTone,
                         isAlarmEnabled = isAlarmEnabled,
                         isVibrateEnabled = isVibrateEnabled,
                         isSoundPlaying = isSoundPlaying,
                         lrmTestState = lrmTestState,
+                        reminderStates = reminderStates,
+                        diagnosticLogs = diagnosticLogs,
                         onLeadMinutesChange = { viewModel.setGlobalReminderLead(it) },
+                        onGracePeriodChange = { viewModel.setGracePeriodMinutes(it) },
                         onToneChange = { viewModel.setSelectedSoundTone(it) },
                         onAlarmToggle = { viewModel.toggleAlarm(it) },
                         onVibrateToggle = { viewModel.toggleVibrate(it) },
@@ -333,7 +354,9 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
                         onCancelLrmTest = { viewModel.cancelLrmTest() },
                         onSetLrmDuration = { viewModel.setLrmDuration(it) },
                         onSendTestReminder = { viewModel.sendTestReminder() },
-                        onChangeTimezoneClick = { showTimezoneDialog = true }
+                        onChangeTimezoneClick = { showTimezoneDialog = true },
+                        onReconcileNow = { viewModel.reconcileReminders() },
+                        onClearDiagnosticLogs = { viewModel.clearDiagnosticLogs() }
                     )
                     3 -> AnnouncementsScreen(
                         announcements = announcements,
@@ -363,6 +386,7 @@ fun ClassTimeApp(viewModel: ClassTimeViewModel = viewModel()) {
             userTimezone = selectedTimezone,
             currentTimeMs = currentTimeMs,
             preference = pref,
+            defaultLeadMinutes = globalLeadMinutes,
             sheetState = sheetState,
             onSaveReminder = { lead, isAlarm, tone, vibrate ->
                 viewModel.saveClassReminder(selectedClassForDetail!!.id, lead, isAlarm, tone, vibrate)

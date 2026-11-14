@@ -75,13 +75,14 @@ fun ClassDetailSheet(
     userTimezone: String,
     currentTimeMs: Long,
     preference: ReminderPreferenceEntity?,
+    defaultLeadMinutes: Int = 20,
     sheetState: SheetState,
     onSaveReminder: (leadMinutes: Int, isAlarm: Boolean, tone: String, vibrate: Boolean) -> Unit,
     onPlayTone: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var leadMinutes by remember { mutableIntStateOf(preference?.leadMinutes ?: 15) }
+    var leadMinutes by remember { mutableIntStateOf(preference?.leadMinutes ?: defaultLeadMinutes) }
     var alarmEnabled by remember { mutableStateOf(preference?.isAlarmEnabled ?: true) }
     var vibrateEnabled by remember { mutableStateOf(preference?.vibrate ?: true) }
     var selectedTone by remember { mutableStateOf(preference?.soundTone ?: "Gentle Chime") }
@@ -547,14 +548,18 @@ private fun reminderSavedText(
     userTimezone: String,
     alarmEnabled: Boolean
 ): String {
-    val triggerMs = classEntity.utcStartEpochMs - leadMinutes * 60_000L
+    val advanceMs = classEntity.utcStartEpochMs - leadMinutes * 60_000L
+    val startMs = classEntity.utcStartEpochMs
     val now = System.currentTimeMillis()
+    val startLocal = TimezoneHelper.formatToLocalTime(startMs, userTimezone)
     return when {
-        alarmEnabled && triggerMs > now ->
-            "Reminder scheduled • you'll be notified at ${TimezoneHelper.formatToLocalTime(triggerMs, userTimezone)} local time."
-        alarmEnabled ->
-            "Saved • the reminder time has already passed for this class."
+        alarmEnabled && advanceMs > now ->
+            "Two-stage reminders armed • Advance at ${TimezoneHelper.formatToLocalTime(advanceMs, userTimezone)} & final start alert at $startLocal."
+        alarmEnabled && startMs > now ->
+            "Advance window passed • Catch-up advance active & final class-start alert armed for $startLocal."
+        startMs > now ->
+            "Advance sound muted • Final class-start alert remains armed for $startLocal."
         else ->
-            "Reminder disabled for this class."
+            "Class start time has already passed."
     }
 }

@@ -9,7 +9,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.abnahid.uniblsync.data.model.AnnouncementEntity
 import com.abnahid.uniblsync.data.model.AuditLogEntity
 import com.abnahid.uniblsync.data.model.ClassEntity
+import com.abnahid.uniblsync.data.model.ClassReminderStateEntity
 import com.abnahid.uniblsync.data.model.RecurringScheduleEntity
+import com.abnahid.uniblsync.data.model.ReminderDiagnosticLogEntity
 import com.abnahid.uniblsync.data.model.ReminderPreferenceEntity
 import com.abnahid.uniblsync.data.model.ScheduleOverrideEntity
 import com.abnahid.uniblsync.data.model.ScheduledReminderEntity
@@ -21,6 +23,8 @@ import com.abnahid.uniblsync.data.model.VisitorEntity
         ClassEntity::class,
         ReminderPreferenceEntity::class,
         ScheduledReminderEntity::class,
+        ClassReminderStateEntity::class,
+        ReminderDiagnosticLogEntity::class,
         RecurringScheduleEntity::class,
         ScheduleOverrideEntity::class,
         AnnouncementEntity::class,
@@ -28,13 +32,15 @@ import com.abnahid.uniblsync.data.model.VisitorEntity
         VisitorEntity::class,
         SyncStateEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun classDao(): ClassDao
     abstract fun reminderDao(): ReminderDao
     abstract fun scheduledReminderDao(): ScheduledReminderDao
+    abstract fun classReminderStateDao(): ClassReminderStateDao
+    abstract fun reminderDiagnosticLogDao(): ReminderDiagnosticLogDao
     abstract fun recurringScheduleDao(): RecurringScheduleDao
     abstract fun scheduleOverrideDao(): ScheduleOverrideDao
     abstract fun announcementDao(): AnnouncementDao
@@ -53,7 +59,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "classtime_database"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance
@@ -143,6 +149,64 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_scheduled_reminders_classId` ON `scheduled_reminders` (`classId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_scheduled_reminders_triggerEpochMs` ON `scheduled_reminders` (`triggerEpochMs`)")
+            }
+        }
+
+        /**
+         * Non-destructive migration adding two-stage reminder tracking and diagnostics.
+         * Preserves all existing classes, preferences, announcements, and scheduled reminders.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `scheduled_reminders` ADD COLUMN `stage` TEXT NOT NULL DEFAULT 'ADVANCE'")
+                db.execSQL("ALTER TABLE `scheduled_reminders` ADD COLUMN `classStartEpochMs` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `scheduled_reminders` ADD COLUMN `scheduleStatus` TEXT NOT NULL DEFAULT 'PENDING'")
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `class_reminder_states` (" +
+                        "`occurrenceKey` TEXT NOT NULL, " +
+                        "`classId` TEXT NOT NULL, " +
+                        "`classDate` TEXT NOT NULL, " +
+                        "`subject` TEXT NOT NULL, " +
+                        "`sourceTimezone` TEXT NOT NULL, " +
+                        "`classStartEpochMs` INTEGER NOT NULL, " +
+                        "`advanceTriggerEpochMs` INTEGER NOT NULL, " +
+                        "`finalTriggerEpochMs` INTEGER NOT NULL, " +
+                        "`advanceScheduledStatus` TEXT NOT NULL, " +
+                        "`finalScheduledStatus` TEXT NOT NULL, " +
+                        "`advanceDelivered` INTEGER NOT NULL, " +
+                        "`advanceDeliveredAtEpochMs` INTEGER NOT NULL, " +
+                        "`finalDelivered` INTEGER NOT NULL, " +
+                        "`finalDeliveredAtEpochMs` INTEGER NOT NULL, " +
+                        "`repeatCount` INTEGER NOT NULL, " +
+                        "`dismissed` INTEGER NOT NULL, " +
+                        "`updatedAtEpochMs` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`occurrenceKey`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_class_reminder_states_classId` ON `class_reminder_states` (`classId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_class_reminder_states_classDate` ON `class_reminder_states` (`classDate`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_class_reminder_states_classStartEpochMs` ON `class_reminder_states` (`classStartEpochMs`)")
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `reminder_diagnostic_logs` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`timestampEpochMs` INTEGER NOT NULL, " +
+                        "`eventType` TEXT NOT NULL, " +
+                        "`classId` TEXT NOT NULL, " +
+                        "`subject` TEXT NOT NULL, " +
+                        "`stage` TEXT NOT NULL, " +
+                        "`sourceTimezone` TEXT NOT NULL, " +
+                        "`localClassTime` TEXT NOT NULL, " +
+                        "`advanceTriggerMs` INTEGER NOT NULL, " +
+                        "`finalTriggerMs` INTEGER NOT NULL, " +
+                        "`resultStatus` TEXT NOT NULL, " +
+                        "`exactAlarmGranted` INTEGER NOT NULL, " +
+                        "`notificationPermissionGranted` INTEGER NOT NULL, " +
+                        "`repeatCount` INTEGER NOT NULL, " +
+                        "`dismissed` INTEGER NOT NULL, " +
+                        "`message` TEXT NOT NULL)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_reminder_diagnostic_logs_timestampEpochMs` ON `reminder_diagnostic_logs` (`timestampEpochMs`)")
             }
         }
     }

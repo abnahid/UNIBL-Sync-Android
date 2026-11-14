@@ -21,6 +21,9 @@ interface ScheduledReminderDao {
     @Query("SELECT * FROM scheduled_reminders WHERE classId = :classId")
     suspend fun getScheduledForClass(classId: String): List<ScheduledReminderEntity>
 
+    @Query("SELECT * FROM scheduled_reminders WHERE reminderKey = :reminderKey LIMIT 1")
+    suspend fun getByReminderKey(reminderKey: String): ScheduledReminderEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(reminder: ScheduledReminderEntity)
 

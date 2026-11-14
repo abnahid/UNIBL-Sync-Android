@@ -10,7 +10,9 @@ import com.abnahid.uniblsync.data.model.AnnouncementEntity
 import com.abnahid.uniblsync.data.model.AuditLogEntity
 import com.abnahid.uniblsync.data.model.ClassEntity
 import com.abnahid.uniblsync.data.local.VisitorDao
+import com.abnahid.uniblsync.data.model.ClassReminderStateEntity
 import com.abnahid.uniblsync.data.model.RecurringScheduleEntity
+import com.abnahid.uniblsync.data.model.ReminderDiagnosticLogEntity
 import com.abnahid.uniblsync.data.model.ReminderPreferenceEntity
 import com.abnahid.uniblsync.data.model.ScheduleOverrideEntity
 import com.abnahid.uniblsync.data.model.VisitorEntity
@@ -47,6 +49,10 @@ class ClassRepository(
     val allAnnouncements: Flow<List<AnnouncementEntity>> = announcementDao.getAllAnnouncements()
     val allAuditLogs: Flow<List<AuditLogEntity>> = auditLogDao.getAllLogs()
     val allVisitors: Flow<List<VisitorEntity>> = visitorDao.getAllVisitors()
+    val allReminderStates: Flow<List<ClassReminderStateEntity>> =
+        database.classReminderStateDao().observeAllStates()
+    val recentDiagnosticLogs: Flow<List<ReminderDiagnosticLogEntity>> =
+        database.reminderDiagnosticLogDao().observeRecentLogs()
     val lastSuccessfulSync: Flow<SyncStateEntity?> = database.syncStateDao().observe("public-data")
     val currentUserSession: Flow<UserSession?> = sessionManager?.sessionState ?: emptyFlow()
 
@@ -56,6 +62,14 @@ class ClassRepository(
         // sync exists, the backend owns recurring definitions permanently.
         if (database.syncStateDao().get("public-data") == null) FirstSemesterSeed.seedIfNeeded(database)
         appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
+    }
+
+    suspend fun reconcileReminders() {
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
+    }
+
+    suspend fun clearDiagnosticLogs() {
+        database.reminderDiagnosticLogDao().clearAll()
     }
 
     /**
@@ -91,7 +105,7 @@ class ClassRepository(
             database.syncStateDao().save(SyncStateEntity("public-data", syncedAt))
         }
         appContext?.let { context ->
-            ReminderReconciler.rescheduleKnownClasses(context, database)
+            ReminderReconciler.reconcileAll(context, database)
             announcements.filterNot { it.id in existingAnnouncementIds }.forEach { announcement ->
                 NotificationHelper.sendAnnouncementNotification(context, announcement.id, announcement.title, announcement.message)
             }
@@ -148,6 +162,7 @@ class ClassRepository(
         }
 
         classDao.insertClass(entityToSave)
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
 
         auditLogDao.insertLog(
             AuditLogEntity(
@@ -184,6 +199,7 @@ class ClassRepository(
         }
 
         classDao.updateClass(updated)
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
 
         auditLogDao.insertLog(
             AuditLogEntity(
@@ -222,7 +238,7 @@ class ClassRepository(
 
         classDao.updateClass(updated)
         appContext?.let { ctx ->
-            ReminderReconciler.rescheduleKnownClasses(ctx, database)
+            ReminderReconciler.reconcileAll(ctx, database)
         }
 
         auditLogDao.insertLog(
@@ -248,10 +264,10 @@ class ClassRepository(
 
         classDao.updateClass(updated)
         reminderDao.deletePreferenceForClass(classEntity.id)
-        database.scheduledReminderDao().deleteByClassId(classEntity.id)
         appContext?.let { ctx ->
-            ReminderReconciler.rescheduleKnownClasses(ctx, database)
-        }
+            ReminderReconciler.cancelForClass(ctx, database, classEntity.id)
+            ReminderReconciler.reconcileAll(ctx, database)
+        } ?: database.scheduledReminderDao().deleteByClassId(classEntity.id)
 
         auditLogDao.insertLog(
             AuditLogEntity(
@@ -270,10 +286,10 @@ class ClassRepository(
 
         classDao.deleteClass(classEntity)
         reminderDao.deletePreferenceForClass(classEntity.id)
-        database.scheduledReminderDao().deleteByClassId(classEntity.id)
         appContext?.let { ctx ->
-            ReminderReconciler.rescheduleKnownClasses(ctx, database)
-        }
+            ReminderReconciler.cancelForClass(ctx, database, classEntity.id)
+            ReminderReconciler.reconcileAll(ctx, database)
+        } ?: database.scheduledReminderDao().deleteByClassId(classEntity.id)
 
         auditLogDao.insertLog(
             AuditLogEntity(
@@ -326,19 +342,19 @@ class ClassRepository(
             notes = reason.takeIf { it.isNotBlank() } ?: existing?.notes
         )
         database.scheduleOverrideDao().insertOverride(override)
-        appContext?.let { ctx -> ReminderReconciler.rescheduleKnownClasses(ctx, database) }
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
     }
 
     /** Makes a per-occurrence field change (time, group, mode, location, link, ...). */
     suspend fun applyOccurrenceChange(override: ScheduleOverrideEntity) {
         database.scheduleOverrideDao().insertOverride(override)
-        appContext?.let { ctx -> ReminderReconciler.rescheduleKnownClasses(ctx, database) }
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
     }
 
     /** Removes an override so the original recurring definition applies again. */
     suspend fun removeOverride(overrideId: String) {
         database.scheduleOverrideDao().deleteOverrideById(overrideId)
-        appContext?.let { ctx -> ReminderReconciler.rescheduleKnownClasses(ctx, database) }
+        appContext?.let { ctx -> ReminderReconciler.reconcileAll(ctx, database) }
     }
 
     suspend fun observeOverrides(): Flow<List<ScheduleOverrideEntity>> =

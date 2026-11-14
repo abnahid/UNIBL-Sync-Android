@@ -55,6 +55,17 @@ class ReminderGlobalStore(context: Context) {
         get() = prefs.getLong(KEY_LRM_LAST_DELIVERED_MS, 0L)
         set(value) = prefs.edit().putLong(KEY_LRM_LAST_DELIVERED_MS, value).apply()
 
+    /** Student's configured local timezone ID (defaults to Asia/Dhaka). */
+    var selectedTimezone: String
+        get() = prefs.getString(KEY_SELECTED_TIMEZONE, TimezoneHelper.BANGLADESH_TIMEZONE)
+            ?: TimezoneHelper.BANGLADESH_TIMEZONE
+        set(value) = prefs.edit().putString(KEY_SELECTED_TIMEZONE, value).apply()
+
+    /** Configurable grace period after class start for one catch-up final notification (default 5 min). */
+    var gracePeriodMinutes: Int
+        get() = prefs.getInt(KEY_GRACE_PERIOD_MINUTES, 5)
+        set(value) = prefs.edit().putInt(KEY_GRACE_PERIOD_MINUTES, value.coerceIn(1, 15)).apply()
+
     companion object {
         private const val KEY_LEAD_MINUTES = "global_lead_minutes"
         private const val KEY_STATUS_TONE = "global_sound_tone"
@@ -66,6 +77,8 @@ class ReminderGlobalStore(context: Context) {
         private const val KEY_LRM_TARGET_MS = "lrm_target_epoch_ms"
         private const val KEY_LRM_ACTIVE = "lrm_test_active"
         private const val KEY_LRM_LAST_DELIVERED_MS = "lrm_last_delivered_ms"
+        private const val KEY_SELECTED_TIMEZONE = "selected_timezone"
+        private const val KEY_GRACE_PERIOD_MINUTES = "grace_period_minutes"
 
         @Volatile
         private var instance: ReminderGlobalStore? = null

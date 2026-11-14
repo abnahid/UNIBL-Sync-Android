@@ -14,6 +14,9 @@ interface ClassDao {
     @Query("SELECT * FROM classes ORDER BY utcStartEpochMs ASC")
     fun getAllClasses(): Flow<List<ClassEntity>>
 
+    @Query("SELECT * FROM classes ORDER BY utcStartEpochMs ASC")
+    suspend fun getAllClassesSnapshot(): List<ClassEntity>
+
     @Query("SELECT * FROM classes WHERE id = :id LIMIT 1")
     fun getClassById(id: String): Flow<ClassEntity?>
 

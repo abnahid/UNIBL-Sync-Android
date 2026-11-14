@@ -18,7 +18,7 @@ import androidx.room.PrimaryKey
 )
 data class ScheduledReminderEntity(
     @PrimaryKey
-    val reminderKey: String, // "reminder:{classId}|{occurrenceDate}"
+    val reminderKey: String, // "reminder:{stage}:{classId}|{occurrenceDate}"
     val classId: String,
     val occurrenceDate: String, // yyyy-MM-dd in the university timezone
     val scheduleId: String, // "" for classes synced from the API
@@ -34,10 +34,19 @@ data class ScheduledReminderEntity(
     val attendanceMode: String,
     val sourceStartTime: String,
     val sourceEndTime: String,
-    val locationOrUrl: String
+    val locationOrUrl: String,
+    val stage: String = STAGE_ADVANCE,
+    val classStartEpochMs: Long = 0L,
+    val scheduleStatus: String = "PENDING"
 ) {
     companion object {
-        fun buildKey(classId: String, occurrenceDate: String): String =
-            "reminder:$classId|$occurrenceDate"
+        const val STAGE_ADVANCE = "ADVANCE"
+        const val STAGE_FINAL = "FINAL"
+
+        fun buildKey(
+            classId: String,
+            occurrenceDate: String,
+            stage: String = STAGE_ADVANCE
+        ): String = "reminder:$stage:$classId|$occurrenceDate"
     }
 }

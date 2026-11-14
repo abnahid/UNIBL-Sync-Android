@@ -1,5 +1,7 @@
 package com.abnahid.uniblsync
 
+import android.Manifest
+import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -7,6 +9,7 @@ import com.abnahid.uniblsync.data.local.AppDatabase
 import com.abnahid.uniblsync.data.model.ClassEntity
 import com.abnahid.uniblsync.data.model.RecurringScheduleEntity
 import com.abnahid.uniblsync.data.model.ReminderPreferenceEntity
+import com.abnahid.uniblsync.data.model.ScheduledReminderEntity
 import com.abnahid.uniblsync.data.schedule.ReminderReconciler
 import com.abnahid.uniblsync.util.TimezoneHelper
 import kotlinx.coroutines.runBlocking
@@ -17,16 +20,18 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 /**
- * Verifies the reminder reconciliation contract:
- * - trigger instant = class start minus the configured lead
- * - expired / already-started classes are skipped
- * - cancelled classes lose their preference and their scheduled row
- * - changing a reminder replaces the persisted row (never duplicates)
+ * Verifies the two-stage reminder reconciliation contract:
+ * - Stage 1 (ADVANCE) trigger instant = class start minus configured lead
+ * - Stage 2 (FINAL) trigger instant = exact class start time (independent of Stage 1)
+ * - Stale past classes beyond grace period are skipped
+ * - Cancelled classes lose their preference and both scheduled rows
+ * - Changing lead time replaces persisted rows without duplicates
  * - `rec:` occurrences are resolved through the occurrence generator
- * - `rec:` preferences survive the missing-class cleanup
+ * - `rec:` preferences survive missing-class cleanup
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -39,7 +44,9 @@ class ReminderReconcilerTest {
 
     @Before
     fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        context = app
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -70,44 +77,65 @@ class ReminderReconcilerTest {
     )
 
     @Test
-    fun `reminder trigger is start time minus leadMinutes`() = runBlocking {
+    fun `two-stage triggers are advance minus leadMinutes and exact class start`() = runBlocking {
         val start = TimezoneHelper.toUtcEpochMs("2026-12-02", "12:00", bosnia)
+        val now = start - 60 * 60_000L
         database.classDao().insertClass(storedClass("class-1", "2026-12-02", "12:00", "13:30"))
         val pref = ReminderPreferenceEntity(classId = "class-1", leadMinutes = 15)
 
-        ReminderReconciler.scheduleForPreference(context, database, pref)
+        ReminderReconciler.scheduleForPreference(context, database, pref, nowEpochMs = now)
 
         val scheduled = database.scheduledReminderDao().getScheduledForClass("class-1")
-        assertEquals(1, scheduled.size)
-        assertEquals(start - 15 * 60_000L, scheduled.first().triggerEpochMs)
-        assertEquals(ReminderReconciler.reminderKeyFor("class-1", "2026-12-02"), scheduled.first().reminderKey)
+        assertEquals(2, scheduled.size)
+
+        val advance = scheduled.first { it.stage == ScheduledReminderEntity.STAGE_ADVANCE }
+        val finalRow = scheduled.first { it.stage == ScheduledReminderEntity.STAGE_FINAL }
+        assertEquals(start - 15 * 60_000L, advance.triggerEpochMs)
+        assertEquals(
+            ReminderReconciler.reminderKeyFor("class-1", "2026-12-02", ScheduledReminderEntity.STAGE_ADVANCE),
+            advance.reminderKey
+        )
+        assertEquals(start, finalRow.triggerEpochMs)
+        assertEquals(
+            ReminderReconciler.reminderKeyFor("class-1", "2026-12-02", ScheduledReminderEntity.STAGE_FINAL),
+            finalRow.reminderKey
+        )
     }
 
     @Test
-    fun `already started class is skipped and nothing is scheduled`() = runBlocking {
+    fun `stale past class beyond grace period is skipped and nothing is scheduled`() = runBlocking {
+        val start = TimezoneHelper.toUtcEpochMs("2026-10-06", "12:00", bosnia)
+        val now = start + 15 * 60_000L
         database.classDao().insertClass(storedClass("class-2", "2026-10-06", "12:00", "13:30"))
 
         ReminderReconciler.scheduleForPreference(
-            context, database, ReminderPreferenceEntity(classId = "class-2", leadMinutes = 15)
+            context,
+            database,
+            ReminderPreferenceEntity(classId = "class-2", leadMinutes = 15),
+            nowEpochMs = now
         )
 
         assertTrue(database.scheduledReminderDao().getScheduledForClass("class-2").isEmpty())
     }
 
     @Test
-    fun `cancelled class loses preference and scheduled reminder`() = runBlocking {
+    fun `cancelled class loses preference and both scheduled stages`() = runBlocking {
+        val start = TimezoneHelper.toUtcEpochMs("2026-12-02", "12:00", bosnia)
+        val now = start - 60 * 60_000L
         database.classDao().insertClass(storedClass("class-3", "2026-12-02", "12:00", "13:30"))
         val pref = ReminderPreferenceEntity(classId = "class-3", leadMinutes = 15)
-        ReminderReconciler.scheduleForPreference(context, database, pref)
-        assertEquals(1, database.scheduledReminderDao().getScheduledForClass("class-3").size)
+        ReminderReconciler.scheduleForPreference(context, database, pref, nowEpochMs = now)
+        assertEquals(2, database.scheduledReminderDao().getScheduledForClass("class-3").size)
 
-        // Class gets cancelled afterwards (kept so the fixture matches reality).
         database.classDao().insertClass(
             storedClass("class-3", "2026-12-02", "12:00", "13:30", status = ClassEntity.STATUS_CANCELLED)
         )
         database.reminderDao().savePreference(ReminderPreferenceEntity(classId = "class-3", leadMinutes = 15))
         ReminderReconciler.scheduleForPreference(
-            context, database, database.reminderDao().getAllPreferencesSnapshot().first { it.classId == "class-3" }
+            context,
+            database,
+            database.reminderDao().getAllPreferencesSnapshot().first { it.classId == "class-3" },
+            nowEpochMs = now
         )
 
         val prefs = database.reminderDao().getAllPreferencesSnapshot()
@@ -116,24 +144,34 @@ class ReminderReconcilerTest {
     }
 
     @Test
-    fun `changing the reminder replaces the persisted row without duplicates`() = runBlocking {
+    fun `changing the reminder replaces persisted rows without duplicates`() = runBlocking {
+        val start = TimezoneHelper.toUtcEpochMs("2026-12-02", "12:00", bosnia)
+        val now = start - 90 * 60_000L
         database.classDao().insertClass(storedClass("class-4", "2026-12-02", "12:00", "13:30"))
 
-        val start = TimezoneHelper.toUtcEpochMs("2026-12-02", "12:00", bosnia)
         ReminderReconciler.scheduleForPreference(
-            context, database, ReminderPreferenceEntity(classId = "class-4", leadMinutes = 15)
+            context, database, ReminderPreferenceEntity(classId = "class-4", leadMinutes = 15), nowEpochMs = now
         )
+        val initialRows = database.scheduledReminderDao().getScheduledForClass("class-4")
+        assertEquals(2, initialRows.size)
         assertEquals(
             start - 15 * 60_000L,
-            database.scheduledReminderDao().getScheduledForClass("class-4").single().triggerEpochMs
+            initialRows.first { it.stage == ScheduledReminderEntity.STAGE_ADVANCE }.triggerEpochMs
         )
 
         ReminderReconciler.scheduleForPreference(
-            context, database, ReminderPreferenceEntity(classId = "class-4", leadMinutes = 30)
+            context, database, ReminderPreferenceEntity(classId = "class-4", leadMinutes = 30), nowEpochMs = now
         )
-        val rows = database.scheduledReminderDao().getScheduledForClass("class-4")
-        assertEquals(1, rows.size)
-        assertEquals(start - 30 * 60_000L, rows.single().triggerEpochMs)
+        val updatedRows = database.scheduledReminderDao().getScheduledForClass("class-4")
+        assertEquals(2, updatedRows.size)
+        assertEquals(
+            start - 30 * 60_000L,
+            updatedRows.first { it.stage == ScheduledReminderEntity.STAGE_ADVANCE }.triggerEpochMs
+        )
+        assertEquals(
+            start,
+            updatedRows.first { it.stage == ScheduledReminderEntity.STAGE_FINAL }.triggerEpochMs
+        )
     }
 
     @Test
@@ -153,20 +191,25 @@ class ReminderReconcilerTest {
             )
         )
         val expectedStart = TimezoneHelper.toUtcEpochMs("2026-12-01", "12:00", bosnia)
-        assertTrue(expectedStart > System.currentTimeMillis())
+        val now = expectedStart - 60 * 60_000L
 
         ReminderReconciler.scheduleForPreference(
-            context, database,
-            ReminderPreferenceEntity(classId = "rec:sched-1:2026-12-01", leadMinutes = 10)
+            context,
+            database,
+            ReminderPreferenceEntity(classId = "rec:sched-1:2026-12-01", leadMinutes = 10),
+            nowEpochMs = now
         )
 
         val rows = database.scheduledReminderDao()
             .getScheduledForClass("rec:sched-1:2026-12-01")
-        assertEquals(1, rows.size)
-        assertEquals(expectedStart - 10 * 60_000L, rows.first().triggerEpochMs)
-        assertEquals("2026-12-01", rows.first().occurrenceDate)
-        assertEquals("sched-1", rows.first().scheduleId)
-        assertEquals("Histology", rows.first().subject)
+        assertEquals(2, rows.size)
+        val advance = rows.first { it.stage == ScheduledReminderEntity.STAGE_ADVANCE }
+        val finalRow = rows.first { it.stage == ScheduledReminderEntity.STAGE_FINAL }
+        assertEquals(expectedStart - 10 * 60_000L, advance.triggerEpochMs)
+        assertEquals(expectedStart, finalRow.triggerEpochMs)
+        assertEquals("2026-12-01", advance.occurrenceDate)
+        assertEquals("sched-1", advance.scheduleId)
+        assertEquals("Histology", advance.subject)
     }
 
     @Test
